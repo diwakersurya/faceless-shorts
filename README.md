@@ -236,10 +236,97 @@ View effects: `python -m faceless_shorts effects`
 | **FFmpeg whisper** (whisper.cpp) | `transcribe` → local SRT/JSON extraction (offline) | Free |
 | **yt-dlp** | Reference/compilation workflows | Free |
 | **ComfyUI** | `--engine comfyui` local Stable Diffusion visuals | Free, offline |
+| **FastMetal 1.3B** (FastVideo MLX) | `--video-engine fastmetal` real-motion AI clip per scene instead of Ken Burns on a still image (setup in the next section) | Free, offline (Apple Silicon, 16 GB+) |
 | **Ollama** | Local LLM script generation (no OpenAI key) | Free, offline |
 | **Pexels / Pixabay keys** | Stock video/image backgrounds (optional keys) | Free tier |
 
 **Open-source contributors**: All tools are free and open-source — no restrictions or paywalls.
+
+---
+
+## 🎞️ Real-Motion Scenes with a Local Video Model (`--video-engine fastmetal`)
+
+By default every scene is a still image with Ken Burns camera motion. With `--video-engine fastmetal` each scene is generated as a real video clip by [FastMetal 1.3B](https://huggingface.co/FastVideo/FastMetal-1.3B-QAD), which runs on your own Mac: free, private, no API key. The flag is optional. Without it, or on a computer that cannot run the model, shorts are made exactly as before.
+
+### 1. Check that your computer can run it
+
+| Needed | How to check |
+| :--- | :--- |
+| A Mac with Apple Silicon (M1 or newer) | `uname -m` prints `arm64` |
+| 16 GB memory or more | `sysctl -n hw.memsize` prints 17179869184 or more |
+| macOS 14 or newer | `sw_vers -productVersion` |
+| About 16 GB of free disk (the model is a 13.4 GB download) | `df -h ~` |
+| [`uv`](https://docs.astral.sh/uv/) and `ffmpeg` | `uv --version`, `ffmpeg -version` |
+
+Intel Macs, Windows and Linux cannot run this model. Skip this section there: everything else works.
+
+### 2. Install the model (once)
+
+```bash
+mkdir -p ~/fastmetal-video && cd ~/fastmetal-video
+git clone --depth 1 https://github.com/hao-ai-lab/FastVideo.git
+(cd FastVideo && uv venv --python 3.12 --seed && uv pip install --python .venv/bin/python -e ".[mlx]")
+FastVideo/.venv/bin/hf download FastVideo/FastMetal-1.3B-QAD --local-dir ./FastMetal-1.3B-QAD
+```
+
+The download can be stopped and started again with the same last command; it continues where it stopped.
+
+### 3. Tell faceless-shorts where it is
+
+Nothing to do if you installed it in `~/fastmetal-video`. For any other folder, either set it in the web app (Settings → FastMetal folder) or export it:
+
+```bash
+export FACELESS_FASTMETAL_HOME=/path/to/the/folder   # the one that holds FastVideo/ and FastMetal-1.3B-QAD/
+```
+
+### 4. Confirm it was found
+
+```bash
+python -m faceless_shorts doctor   # the "fastmetal" row must say OK; if not, it names the file it could not find
+```
+
+### 5. Make a short
+
+```bash
+python -m faceless_shorts generate --niche stoicism --video-engine fastmetal
+python -m faceless_shorts generate --topic "why foxes hunt at dawn" --video-engine fastmetal -tr dissolve
+```
+
+In the web app, turn on **Generate scenes as AI video**. The switch is off and says why when the model is not found.
+
+### What to expect
+
+- **Time**: about 5 minutes per scene on an M3 Pro with 18 GB (most of it is reading the prompt; the clip itself takes about 2 minutes). A 5-scene short takes about 25 minutes.
+- **Look**: silent 480x832 clips at 16 fps, upscaled to the canvas. Voice, subtitles, transitions and grades are applied as usual.
+- **Length**: a clip covers up to 5 seconds. A longer scene is slowed down to fill its time.
+- **Cache**: generated clips are kept in `.temp_render/cache`, so making the same short again, or after a stop, reuses them.
+- **Fallback**: a scene whose clip fails is made from a still image with Ken Burns motion, so a render never breaks.
+
+| Setting | Default | Purpose |
+| :--- | :--- | :--- |
+| `FACELESS_FASTMETAL_HOME` | `~/fastmetal-video` | Folder that holds `FastVideo/` and `FastMetal-1.3B-QAD/` |
+| `FACELESS_FASTMETAL_ARGS` | `--fast` | Extra generator flags. `--fast` generates half the frames and interpolates the rest. A 16-18 GB Mac needs it: generating every frame runs out of GPU memory there. On a larger Mac, set it to an empty string to generate every frame |
+
+**If a scene says `FastMetal failed: ... Insufficient Memory`**: close memory-heavy apps (browsers, other AI models) and run it again; finished clips are reused. Keep `--fast` on 16-18 GB.
+
+---
+
+## 🖥️ Web App
+
+A local page for making shorts without the command line: fill in a form, watch the progress, then play, download or delete the results. It is built with React and the [Astryx](https://github.com/meta/astryx) design system and answers only on your own computer.
+
+```bash
+cd ui
+bun install        # once; needs Bun (https://bun.sh)
+bun run serve      # then open http://127.0.0.1:4780
+```
+
+- **New short**: your own topic or a ready-made script, language and voice, art and subtitle style; transition, colour grade, quality, music and the progress bar are under *More options*.
+- **AI video scenes**: the *Generate scenes as AI video* switch uses the local FastMetal model (see the section above). Set its folder under Settings (the gear, top right).
+- **Progress**: the five steps of the render, the scene being made, the full log, and a Stop button. One short is made at a time.
+- **Your shorts**: every video in `output/`. Open one to play it, copy its title, caption and tags, download it or delete it.
+
+The page runs `python3 -m faceless_shorts` from the repository, so install the Python requirements first (`pip install -r requirements.txt`). To use another Python or port, create `ui/config.json`, for example `{ "python": "/path/to/python", "port": 4780 }`. `bun run dev` reloads the page as the code changes; `bun test` and `bun run typecheck` check it.
 
 ---
 

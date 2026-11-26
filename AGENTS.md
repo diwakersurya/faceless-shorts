@@ -30,6 +30,12 @@ python -m faceless_shorts generate --niche mind_blowing_facts -a pixel_art -tr p
 # Generate using custom JSON script
 python -m faceless_shorts generate --script-json presets/stoicism.json --output output/stoic.mp4
 
+# Real-motion AI clip per scene with a local model (Apple Silicon, minutes per scene; see README)
+python -m faceless_shorts generate --niche stoicism --video-engine fastmetal
+
+# Web app (React + Astryx) at http://127.0.0.1:4780
+cd ui && bun install && bun run serve
+
 # Offline test (superfast procedural background)
 python -m faceless_shorts generate --niche stoicism --offline --output output/offline.mp4
 
