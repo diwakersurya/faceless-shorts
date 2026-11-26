@@ -15,6 +15,7 @@ This project is an open-source, 100% free automated faceless video generation sy
 - **Audio Mixing**: FFmpeg `sidechaincompress` audio ducking with procedural ambient synthesis.
 - **Rendering**: FFmpeg with 10 Ken Burns motions, 17 xfade transitions, 5 quality profiles (draft → ultra 1440x2560@60fps), broadcast-standard limited-range color.
 - **Free Tools** (optional, auto-detected via `doctor`): whisper.cpp (FFmpeg built-in STT), yt-dlp, ComfyUI, Ollama, Pexels/Pixabay.
+- **Online mode (optional, not free)**: Google's Gemini API for the script (`--script-engine gemini`, free limits), the voice-over (`--tts-engine gemini`, free limits), scene images (`--engine gemini`, paid) and scene video clips (`--video-engine gemini`, paid by the second). Never choose a paid engine unless the user asks for it. Setup and costs: README, *Online Mode with Gemini*.
 
 ## Quick Commands for Agents
 ```bash
@@ -41,6 +42,11 @@ python -m faceless_shorts config --fastmetal-home ~/fastmetal-video
 
 # Scene images from a local model (Apple Silicon; no rate limit, about 35 s per image)
 python -m faceless_shorts generate --niche stoicism --engine flux2-klein
+
+# Each part has its own engine flag and they mix freely: --script-engine, --tts-engine, --engine (images), --video-engine
+# Online mode: Gemini writes the script and speaks it (free limits) and makes the images (paid, about $0.03 each)
+python -m faceless_shorts config --gemini-key -      # once: paste the key from aistudio.google.com/apikey
+python -m faceless_shorts generate --topic "why foxes hunt at dawn" --script-engine gemini --tts-engine gemini --voice Kore --engine gemini
 
 # Offline test (superfast procedural background)
 python -m faceless_shorts generate --niche stoicism --offline --output output/offline.mp4
