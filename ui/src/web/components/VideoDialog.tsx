@@ -22,7 +22,15 @@ const NARROW = "@media (max-width: 760px)";
 const s = stylex.create({
   // The video beside what to post with it; one under the other on a phone.
   body: { display: "grid", gridTemplateColumns: { default: "minmax(0, 300px) minmax(0, 1fr)", [NARROW]: "minmax(0, 1fr)" }, gap: "var(--spacing-5)", padding: "var(--spacing-4)" },
-  player: { width: "100%", aspectRatio: "9 / 16", borderRadius: "var(--radius-element)", backgroundColor: "#000" },
+  // On a phone the video is kept shorter than the screen, so the caption and the buttons under it are within reach.
+  player: {
+    width: { default: "100%", [NARROW]: "auto" },
+    maxHeight: { default: "none", [NARROW]: "60dvh" },
+    justifySelf: "center",
+    aspectRatio: "9 / 16",
+    borderRadius: "var(--radius-element)",
+    backgroundColor: "#000",
+  },
 });
 
 const close = () => go({ video: null });
@@ -36,7 +44,7 @@ function Details({ video }: { video: Video }) {
   const hashtags = video.tags.map((t) => "#" + t).join(" ");
   return (
     <div {...stylex.props(s.body)}>
-      <video {...stylex.props(s.player)} src={api.videoUrl(video.name)} controls autoPlay playsInline />
+      <video {...stylex.props(s.player)} src={api.videoUrl(video.name)} poster={api.posterUrl(video.name)} controls autoPlay playsInline />
       <VStack gap={4}>
         {video.caption && (
           <VStack gap={2}>

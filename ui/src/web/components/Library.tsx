@@ -24,8 +24,8 @@ function VideoCard({ video }: { video: Video }) {
     <ClickableCard label={`Open ${title}`} href={format({ video: video.name })} padding={2}>
       <VStack gap={2}>
         <AspectRatio ratio={9 / 16}>
-          {/* ponytail: the browser shows a frame of the video itself; a made thumbnail image is worth it only for a long list. */}
-          <video {...stylex.props(s.frame)} src={api.videoUrl(video.name) + "#t=1"} preload="metadata" muted playsInline tabIndex={-1} />
+          {/* A still made by the server: a phone does not have to open each video to show the list. */}
+          <img {...stylex.props(s.frame)} src={api.posterUrl(video.name)} alt="" loading="lazy" />
         </AspectRatio>
         <Text weight="medium" maxLines={2}>
           {title}

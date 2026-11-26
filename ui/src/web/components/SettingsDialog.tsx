@@ -15,14 +15,15 @@ export function SettingsDialog({ options, onClose }: { options: Options; onClose
   const parsed = settings.safeParse({ fastmetalHome: value });
   const changed = value.trim() !== options.settings.fastmetalHome;
   const ready = parsed.success && changed && !save.isPending;
-  const { available, home, missing } = options.fastmetal;
+  const { available, home, missing, fix } = options.fastmetal;
   const status = !parsed.success
     ? ({ type: "error", message: parsed.error.issues[0]!.message } as const)
     : changed
       ? undefined // not checked yet: the answer comes after saving
       : available
         ? ({ type: "success", message: `FastMetal found in ${home}` } as const)
-        : ({ type: "warning", message: `FastMetal not found: ${missing} is missing. The README has the install steps.` } as const);
+        : // Says exactly what is not there and the command that puts it there: a missing folder, code, environment or model.
+          ({ type: "warning", message: `Not ready: ${missing} does not exist. ${fix}` } as const);
   const close = (open: boolean) => {
     if (!open) onClose();
   };
@@ -42,7 +43,7 @@ export function SettingsDialog({ options, onClose }: { options: Options; onClose
             hasAutoFocus
             autoComplete="off"
             placeholder="~/fastmetal-video"
-            description="The folder that holds FastVideo/ and FastMetal-1.3B-QAD/. It makes the AI video scenes. Leave it empty to use ~/fastmetal-video."
+            description="The folder on the computer that runs this app, holding FastVideo/ and FastMetal-1.3B-QAD/. It makes the AI video scenes. Leave it empty to use ~/fastmetal-video."
             status={status}
           />
           <HStack justify="end" gap={2}>

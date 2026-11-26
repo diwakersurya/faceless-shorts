@@ -16,8 +16,8 @@ export type Options = {
   music: string[];
   imageEngines: Choice[];
   videoEngines: Choice[];
-  /** The local video model: whether it was found, where it was looked for, and what was not there. */
-  fastmetal: { available: boolean; home: string; missing: string | null };
+  /** The local video model: whether it is ready, where it was looked for, what was not there and the command that fixes it. */
+  fastmetal: { available: boolean; home: string; missing: string | null; fix: string | null; configured: string };
   defaults: Omit<RenderRequest, "source" | "topic" | "preset" | "progressBar">;
   settings: Settings;
 };
@@ -57,5 +57,6 @@ export const api = {
   videos: () => call<{ videos: Video[] }>("/videos"),
   deleteVideo: (name: string) => call<{ deleted: string }>(at(name), send("DELETE")),
   videoUrl: (name: string) => `/api${at(name)}/file`,
+  posterUrl: (name: string) => `/api${at(name)}/poster`,
   downloadUrl: (name: string) => `/api${at(name)}/file?download`,
 };

@@ -2,8 +2,8 @@
 // The web app's server: serves the page, and runs the Python tool for it one render at a time.
 import { existsSync } from "node:fs";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { allowed } from "./access";
 import { type Progress, START, buildArgs, failureReason, outputName, parseLine } from "./render";
 import { type RenderRequest, renderRequest, settings as settingsSchema, videoName } from "./shared/schema";
 import app from "./web/index.html";
@@ -17,36 +17,51 @@ const defaults = {
   port: 4780,
   host: "127.0.0.1", // answers only on this computer
   python: "python3", // the Python that has faceless_shorts' requirements installed
-  fastmetalHome: "", // set from the app's Settings; empty = the Python tool's own default
+  // Other names this computer may be reached by (a tunnel you run yourself). --tailnet adds the Tailscale name by itself.
+  allowedHosts: [] as string[],
 };
 const saved = (await Bun.file(CONFIG).exists()) ? await Bun.file(CONFIG).json() : {};
 const cfg: typeof defaults = { ...defaults, ...saved };
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
-const expand = (path: string) => (path.startsWith("~") ? join(homedir(), path.slice(1)) : path);
+const lastLine = (text: string) => text.trim().split("\n").at(-1) ?? "";
 
-/**
- * Who may call the API: a page served by this server, on this computer. A request addressed to
- * another host name (DNS rebinding) or made by another website (its Origin differs) is refused.
- */
-function allowed(req: Request) {
-  const url = new URL(req.url);
-  if (!["localhost", "127.0.0.1"].includes(url.hostname)) return false;
-  const origin = req.headers.get("origin");
-  return !origin || origin === url.origin;
+/** This computer's name on the tailnet (machine.tailnet.ts.net) and how to call Tailscale, or what is in the way. */
+async function tailnet(): Promise<{ name: string; bin: string } | { problem: string }> {
+  // The Mac app keeps its command inside the app, so it is often not on the PATH.
+  const inApp = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+  const bin = Bun.which("tailscale") ? "tailscale" : existsSync(inApp) ? inApp : null;
+  if (!bin) return { problem: "Tailscale is not installed on this computer. Install it from https://tailscale.com/download and sign in, then run this again." };
+  const res = await Bun.$`${bin} status --json`.quiet().nothrow();
+  try {
+    const status = JSON.parse(res.stdout.toString());
+    const name = (status.Self?.DNSName as string | undefined)?.replace(/\.$/, "");
+    // A computer keeps its tailnet name while Tailscale is switched off, but nothing can reach it then.
+    if (status.BackendState !== "Running") return { problem: "Tailscale is switched off on this computer. Switch it on (and sign in if it asks), then run this again." };
+    if (name) return { name, bin };
+  } catch {} // no status: treated as not signed in
+  return { problem: "Tailscale is not signed in on this computer. Open Tailscale and sign in, then run this again." };
 }
 
-const pythonEnv = () => ({
-  ...process.env,
-  PYTHONUNBUFFERED: "1", // progress lines arrive as they are printed
-  ...(cfg.fastmetalHome ? { FACELESS_FASTMETAL_HOME: expand(cfg.fastmetalHome) } : {}),
-});
+let phone = "";
+if (process.argv.includes("--tailnet")) {
+  const ts = await tailnet();
+  if ("problem" in ts) {
+    console.error(ts.problem);
+    process.exit(1);
+  }
+  cfg.allowedHosts = [...cfg.allowedHosts, ts.name];
+  phone = `\nFrom a phone on your tailnet: https://${ts.name}/\n  Turn the link on (once):  ${ts.bin} serve --bg ${cfg.port}\n  Turn it off:              ${ts.bin} serve reset`;
+}
+
+// progress lines arrive as they are printed
+const pythonEnv = () => ({ ...process.env, PYTHONUNBUFFERED: "1" });
 
 // ---------------------------------------------------------------- choices
 // The Python tool owns every list of choices; the page only shows them.
 // ponytail: asked again at most every 30 s (and at once after a settings change).
-let choices: { at: number; value: Record<string, unknown> } | null = null;
+let choices: { at: number; value: Record<string, unknown> & { fastmetal: { configured: string } } } | null = null;
 async function options() {
   if (choices && Date.now() - choices.at < 30_000) return choices.value;
   const started = `${cfg.python} -m faceless_shorts options`;
@@ -182,6 +197,18 @@ async function videos() {
   return rows.filter((v) => v.size > 0 && v.name !== unfinished).sort((a, b) => b.createdAt - a.createdAt);
 }
 
+/** A still from the video, made once with ffmpeg and kept. Lists use it, so a phone does not open every video to show them. */
+async function poster(name: string | undefined) {
+  const video = videoPath(name);
+  const image = join(OUTPUT, ".posters", name!.replace(/\.mp4$/, ".jpg"));
+  if (!existsSync(image)) {
+    await mkdir(dirname(image), { recursive: true });
+    const made = Bun.spawn(["ffmpeg", "-y", "-v", "error", "-ss", "0.5", "-i", video, "-frames:v", "1", "-vf", "scale=360:-2", image], { stdout: "ignore", stderr: "ignore" });
+    if ((await made.exited) !== 0 || !existsSync(image)) throw fail(500, "Could not make a picture of this short.");
+  }
+  return image;
+}
+
 function videoPath(name: string | undefined) {
   const parsed = videoName.safeParse(name);
   if (!parsed.success) throw fail(400, "That is not a video name.");
@@ -193,7 +220,7 @@ function videoPath(name: string | undefined) {
 // ------------------------------------------------------------------ server
 type Req = Bun.BunRequest<any>;
 const api = (handler: (req: Req) => Response | Promise<Response>) => async (req: Req) => {
-  if (!allowed(req)) return json({ error: "forbidden" }, 403);
+  if (!allowed(req, cfg.allowedHosts)) return json({ error: "forbidden" }, 403);
   try {
     return await handler(req);
   } catch (e) {
@@ -206,19 +233,34 @@ const body = async <T>(req: Req, schema: { safeParse: (v: unknown) => { success:
   return parsed.data;
 };
 
+// Two copies on one port would take turns answering, each with its own videos: refuse to be the second.
+if (await fetch(`http://${cfg.host}:${cfg.port}/api/job`, { signal: AbortSignal.timeout(1000) }).then(() => true, () => false)) {
+  console.error(`Something already answers on port ${cfg.port}, probably another copy of this app. Stop it first, or set another "port" in ui/config.json.`);
+  process.exit(1);
+}
+
 const server = Bun.serve({
   hostname: cfg.host,
   port: cfg.port,
   development: process.argv.includes("--dev"),
   routes: {
     "/": app,
-    "/api/options": { GET: api(async () => json({ ...(await options()), settings: { fastmetalHome: cfg.fastmetalHome } })) },
+    // The Home Screen icon, at the fixed address web/manifest.webmanifest names.
+    "/icon.png": () => new Response(Bun.file(join(import.meta.dir, "web/icon.png"))),
+    "/api/options": {
+      GET: api(async () => {
+        const all = await options();
+        return json({ ...all, settings: { fastmetalHome: all.fastmetal.configured } });
+      }),
+    },
     "/api/settings": {
+      // Where FastMetal is installed is a fact about this computer, so the Python tool keeps it
+      // (in its own settings file): the command line and every copy of this app then agree.
       PUT: api(async (req) => {
         const { fastmetalHome } = await body(req, settingsSchema);
-        if (fastmetalHome && !existsSync(expand(fastmetalHome))) throw fail(400, `There is no folder at ${fastmetalHome}`);
-        cfg.fastmetalHome = fastmetalHome;
-        await Bun.write(CONFIG, JSON.stringify({ ...saved, fastmetalHome }, null, 2) + "\n");
+        const proc = Bun.spawn([cfg.python, "-m", "faceless_shorts", "config", `--fastmetal-home=${fastmetalHome}`], { cwd: REPO, env: pythonEnv(), stdout: "ignore", stderr: "pipe" });
+        const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+        if (code !== 0) throw fail(400, lastLine(stderr) || "The folder could not be saved.");
         choices = null; // whether FastMetal is found depends on this folder
         return json({ fastmetalHome });
       }),
@@ -234,9 +276,11 @@ const server = Bun.serve({
         const path = videoPath(req.params.name);
         await rm(path);
         await rm(path.replace(/\.mp4$/, "_metadata.json"), { force: true });
+        await rm(join(OUTPUT, ".posters", req.params.name!.replace(/\.mp4$/, ".jpg")), { force: true });
         return json({ deleted: req.params.name });
       }),
     },
+    "/api/videos/:name/poster": { GET: api(async (req) => new Response(Bun.file(await poster(req.params.name)))) },
     "/api/videos/:name/file": {
       GET: api((req) => {
         const file = Bun.file(videoPath(req.params.name));
@@ -248,4 +292,4 @@ const server = Bun.serve({
   fetch: () => json({ error: "not found" }, 404),
 });
 
-console.log(`Faceless Shorts is at ${server.url}`);
+console.log(`Faceless Shorts is at ${server.url}${phone}`);

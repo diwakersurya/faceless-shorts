@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { allowed } from "./access";
 import { START, buildArgs, failureReason, outputName, parseLine } from "./render";
 import { type RenderRequest, renderRequest, videoName } from "./shared/schema";
 
@@ -64,4 +65,18 @@ test("progress is read from the tool's own output", () => {
 test("the failure reason is the Python exception, not ffmpeg's last words", () => {
   expect(failureReason(["Traceback (most recent call last):", "RuntimeError: FFmpeg final assembly failed (code 234):", "Conversion failed!", ""])).toBe("RuntimeError: FFmpeg final assembly failed (code 234):");
   expect(failureReason(["zsh: command not found"])).toBe("zsh: command not found");
+});
+
+test("the API answers its own page, the tailnet name when told, and nobody else", () => {
+  const tailnet = ["mac.tail1234.ts.net"];
+  const req = (url: string, origin?: string) => new Request(url, origin ? { headers: { origin } } : undefined);
+  expect(allowed(req("http://127.0.0.1:4780/api/job"))).toBe(true);
+  expect(allowed(req("http://127.0.0.1:4780/api/job", "http://127.0.0.1:4780"))).toBe(true);
+  // another website calling the local server, and a foreign name pointed at it (DNS rebinding)
+  expect(allowed(req("http://127.0.0.1:4780/api/job", "https://evil.example"))).toBe(false);
+  expect(allowed(req("http://evil.example:4780/api/job"))).toBe(false);
+  // the tailnet name is refused unless the server was started for it
+  expect(allowed(req("http://mac.tail1234.ts.net/api/job", "https://mac.tail1234.ts.net"))).toBe(false);
+  expect(allowed(req("http://mac.tail1234.ts.net/api/job", "https://mac.tail1234.ts.net"), tailnet)).toBe(true);
+  expect(allowed(req("http://mac.tail1234.ts.net/api/job", "https://evil.example"), tailnet)).toBe(false);
 });

@@ -102,12 +102,12 @@ function Form({ options, busy, onSettings }: Props) {
             value={form.videoEngine === "fastmetal"}
             onChange={(on) => update({ videoEngine: on ? "fastmetal" : "none" })}
             isDisabled={!options.fastmetal.available}
-            disabledMessage={`FastMetal was not found: ${options.fastmetal.missing} is missing. Set its folder in Settings.`}
+            disabledMessage={`FastMetal is not ready: ${options.fastmetal.missing} does not exist. Settings shows how to fix it.`}
             labelPosition="start"
             labelSpacing="spread"
             width="100%"
           />
-          {!options.fastmetal.available && <Button label="Set the FastMetal folder" variant="ghost" size="sm" onClick={onSettings} />}
+          {!options.fastmetal.available && <Button label="Set up FastMetal" variant="ghost" size="sm" onClick={onSettings} />}
           <Grid columns={2} gap={3}>
             <Selector
               label="Language"
