@@ -236,11 +236,43 @@ View effects: `python -m faceless_shorts effects`
 | **FFmpeg whisper** (whisper.cpp) | `transcribe` → local SRT/JSON extraction (offline) | Free |
 | **yt-dlp** | Reference/compilation workflows | Free |
 | **ComfyUI** | `--engine comfyui` local Stable Diffusion visuals | Free, offline |
-| **FastMetal 1.3B** (FastVideo MLX) | `--video-engine fastmetal` real-motion AI clip per scene instead of Ken Burns on a still image (setup in the next section) | Free, offline (Apple Silicon, 16 GB+) |
+| **mflux** (FLUX.2 klein 4B, Z-Image-Turbo) | `--engine flux2-klein` or `--engine z-image-turbo`: scene images from a local model, no rate limit (setup in the next section) | Free, offline (Apple Silicon, 16 GB+) |
+| **FastMetal 1.3B** (FastVideo MLX) | `--video-engine fastmetal` real-motion AI clip per scene instead of Ken Burns on a still image (setup two sections below) | Free, offline (Apple Silicon, 16 GB+) |
 | **Ollama** | Local LLM script generation (no OpenAI key) | Free, offline |
 | **Pexels / Pixabay keys** | Stock video/image backgrounds (optional keys) | Free tier |
 
 **Open-source contributors**: All tools are free and open-source — no restrictions or paywalls.
+
+---
+
+## 🖼️ Scene Images from a Local Model (`--engine flux2-klein`)
+
+Scene images come from Pollinations by default. Its free tier now allows about one image every 45 seconds per address, and the tool asks for all scenes at once, so most scenes can come back as the plain dark canvas (the log says `Visual generation failed ... Using sleek procedural canvas`). A local image model has no such limit: it runs on your own Mac through [mflux](https://github.com/filipstrand/mflux), free and private.
+
+| Engine | Model | Download | Time per image | Good for |
+| :--- | :--- | :--- | :--- | :--- |
+| `flux2-klein` | FLUX.2 klein 4B, 4-bit (Apache 2.0) | 4.6 GB | about 35 s | The default choice: fast, follows the prompt closely |
+| `z-image-turbo` | Z-Image-Turbo, 4-bit | 5.9 GB | about 110 s | The most photographic look, three times slower |
+
+Times are for a 720x1280 image on an M3 Pro with 18 GB; peak memory was 7 to 9 GB. A 5-scene short took about 3.5 minutes with `flux2-klein`.
+
+**Needs**: a Mac with Apple Silicon and 16 GB of memory or more, and [`uv`](https://docs.astral.sh/uv/).
+
+```bash
+uv tool install --python 3.12 mflux        # once
+python -m faceless_shorts doctor           # the "mflux" row must say OK
+python -m faceless_shorts generate --niche stoicism --engine flux2-klein
+```
+
+The model is downloaded the first time its engine is used. In the web app, pick the model under *More options → Still images come from*; an engine that cannot run on this computer stays in the list, switched off, with what it needs.
+
+| What you see | Why | Fix |
+| :--- | :--- | :--- |
+| Only `mflux-generate` and `mflux-save` get installed, and `doctor` says mflux is not installed | Without `--python 3.12`, uv used an older Python and picked a years-old mflux | `uv tool install --upgrade --force --python 3.12 mflux` |
+| The first image seems to hang | The model is being downloaded (4.6 or 5.9 GB) | Wait, or fetch it beforehand: `hf download mflux-community/flux2-klein-4b-mflux-q4` |
+| Images are slow or the Mac stutters | Another model (FastMetal, an LLM) is using the memory | Run one at a time; images are made one after another on purpose |
+
+Use either local images or AI video scenes for a short, not both at once: `--video-engine fastmetal` replaces the still image of every scene it can make.
 
 ---
 

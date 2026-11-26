@@ -8,7 +8,7 @@ This project is an open-source, 100% free automated faceless video generation sy
 ## Zero-Cost Stack Requirements
 - **LLM / Scripts**: Free prompts / Built-in viral templates (`presets/`), curated knowledge packs, optional free local LLM (Ollama).
 - **TTS**: Microsoft Edge-TTS (`edge-tts`), zero API key, includes native word timestamps.
-- **Visuals**: Pollinations.ai (Flux.1 vertical 1080x1920), local ComfyUI (`--engine comfyui`), or procedural fallback (`--offline`).
+- **Visuals**: Pollinations.ai (Flux.1 vertical 1080x1920), local ComfyUI (`--engine comfyui`), a local mflux model (`--engine flux2-klein` or `z-image-turbo`), or procedural fallback (`--offline`).
 - **Art Styles**: 45 three-stage styles (AI prompt → offline PIL transform → FFmpeg grade): pixel art, chalkboard, glow sketch, PS2, comic, flat vector, minimal line, CGI, LEGO, explainer 3D, watercolor, blueprint, vaporwave, synthwave...
 - **Post-FX**: 15 premium FFmpeg grades + 6 packs (`--effects cinematic|premium|dreamy|retro`): bloom, halation, chromatic aberration, teal-orange, film grain, anamorphic streaks.
 - **Captions**: Word-level ASS karaoke styling (13 styles with 118% word bounce and neon glow).
@@ -38,6 +38,9 @@ cd ui && bun install && bun run serve
 
 # Say once where the FastMetal video model is installed, and check that it is ready
 python -m faceless_shorts config --fastmetal-home ~/fastmetal-video
+
+# Scene images from a local model (Apple Silicon; no rate limit, about 35 s per image)
+python -m faceless_shorts generate --niche stoicism --engine flux2-klein
 
 # Offline test (superfast procedural background)
 python -m faceless_shorts generate --niche stoicism --offline --output output/offline.mp4
