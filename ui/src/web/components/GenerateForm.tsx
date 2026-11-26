@@ -42,7 +42,8 @@ function initial(options: Options): RenderRequest {
     effects: pick(last.effects, options.effects, d.effects),
     quality: pick(last.quality, options.qualities, d.quality),
     music: options.music.includes(last.music as string) ? (last.music as string) : d.music,
-    imageEngine: pick(last.imageEngine, options.imageEngines, d.imageEngine),
+    // An engine that was installed or running last time may not be now.
+    imageEngine: pick(last.imageEngine, options.imageEngines.filter((e) => e.available), d.imageEngine),
     // The video model may have been removed since it was last chosen.
     videoEngine: videoEngine === "fastmetal" && !options.fastmetal.available ? d.videoEngine : videoEngine,
     progressBar: typeof last.progressBar === "boolean" ? last.progressBar : true,
@@ -131,7 +132,14 @@ function Form({ options, busy, onSettings }: Props) {
                 <Selector label="Quality" options={options.qualities} value={form.quality} onChange={set("quality")} />
                 <Selector label="Background music" options={options.music.map((m) => ({ value: m, label: words(m) }))} value={form.music} onChange={set("music")} />
               </Grid>
-              <Selector label="Still images come from" description="Used for every scene that is not an AI video clip." options={options.imageEngines} value={form.imageEngine} onChange={set("imageEngine")} />
+              <Selector
+                label="Still images come from"
+                description="Used for every scene that is not an AI video clip."
+                // An engine that cannot be used here stays in the list, switched off, with what it needs.
+                options={options.imageEngines.map((e) => ({ value: e.value, label: e.label, description: e.description ?? undefined, disabled: !e.available }))}
+                value={form.imageEngine}
+                onChange={set("imageEngine")}
+              />
               <Switch label="Progress bar along the bottom" value={form.progressBar} onChange={(progressBar) => update({ progressBar })} labelPosition="start" labelSpacing="spread" width="100%" />
             </VStack>
           </Collapsible>

@@ -2,7 +2,7 @@
 import type { Progress } from "../render";
 import type { RenderRequest, Settings } from "../shared/schema";
 
-export type Choice = { value: string; label: string; description?: string };
+export type Choice = { value: string; label: string; description?: string | null };
 /** Every list the form offers. The Python tool owns them; nothing here is hardcoded in the page. */
 export type Options = {
   presets: (Choice & { scenes: number })[];
@@ -14,7 +14,8 @@ export type Options = {
   effects: Choice[];
   qualities: Choice[];
   music: string[];
-  imageEngines: Choice[];
+  /** available: false when the engine needs something installed or running; its description then says what. */
+  imageEngines: (Choice & { available: boolean })[];
   videoEngines: Choice[];
   /** The local video model: whether it is ready, where it was looked for, what was not there and the command that fixes it. */
   fastmetal: { available: boolean; home: string; missing: string | null; fix: string | null; configured: string };
