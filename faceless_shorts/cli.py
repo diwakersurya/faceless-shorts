@@ -372,9 +372,9 @@ def run_generate(args):
 
 def print_options():
     """Print every choice the generate command accepts as JSON (read by the web UI)."""
-    from faceless_shorts.integrations import FastMetalClient
+    from faceless_shorts.integrations import FastMetalClient, load_user_settings
 
-    fastmetal_missing = FastMetalClient().missing()
+    fastmetal_problem = FastMetalClient().problem()
     options = {
         "presets": [{"value": key, "label": t.title, "scenes": len(t.scenes)} for key, t in VIRAL_TEMPLATES.items()],
         "languages": [
@@ -403,9 +403,12 @@ def print_options():
         "imageEngines": [{"value": key, "label": label} for key, label in IMAGE_ENGINES.items()],
         "videoEngines": [{"value": key, "label": label} for key, label in VIDEO_ENGINES.items()],
         "fastmetal": {
-            "available": not fastmetal_missing,
+            "available": fastmetal_problem is None,
             "home": FastMetalClient().home,
-            "missing": fastmetal_missing[0] if fastmetal_missing else None,
+            # What is not there and the command that puts it there, for the page to show as they are.
+            "missing": fastmetal_problem[0] if fastmetal_problem else None,
+            "fix": fastmetal_problem[1] if fastmetal_problem else None,
+            "configured": str(load_user_settings().get("fastmetal_home") or ""),
         },
         "defaults": {
             "language": DEFAULT_LANGUAGE,
@@ -421,6 +424,26 @@ def print_options():
         },
     }
     print(json.dumps(options, ensure_ascii=False))
+
+
+def run_config(args):
+    """Show the settings kept for this computer, or change one."""
+    from faceless_shorts.integrations import FastMetalClient, load_user_settings, save_user_settings, user_settings_path
+
+    if args.fastmetal_home is not None:
+        folder = args.fastmetal_home.strip()
+        if folder and not os.path.isdir(os.path.expanduser(folder)):
+            print(f"There is no folder at {folder}", file=sys.stderr)
+            sys.exit(2)
+        save_user_settings({"fastmetal_home": folder})
+
+    saved = load_user_settings().get("fastmetal_home")
+    print(f"Settings file: {user_settings_path()}")
+    print(f"FastMetal folder: {saved or '(not set)'} -> looking in {FastMetalClient().home}")
+    if os.environ.get("FACELESS_FASTMETAL_HOME"):
+        print("  FACELESS_FASTMETAL_HOME is set in this shell and takes precedence over the saved folder.")
+    problem = FastMetalClient().problem()
+    print("FastMetal: ready" if problem is None else f"FastMetal: not ready. {problem[0]} does not exist. {problem[1]}")
 
 
 def run_doctor():
@@ -560,6 +583,8 @@ def main():
     subparsers.add_parser("prompt", help="Print LLM system prompt for Claude/Gemini/OpenCode")
     subparsers.add_parser("doctor", help="Diagnose free tool integrations (ffmpeg, whisper, comfyui, yt-dlp, ollama, ...)")
     subparsers.add_parser("options", help="Print every generate choice as JSON (used by the web UI)")
+    cfg_parser = subparsers.add_parser("config", help="Show or change the settings kept for this computer (where FastMetal is installed)")
+    cfg_parser.add_argument("--fastmetal-home", type=str, default=None, help="Folder that holds FastVideo/ and FastMetal-1.3B-QAD/ (pass an empty string to forget it)")
 
     # transcribe command (local Whisper via FFmpeg)
     tr_parser = subparsers.add_parser("transcribe", help="Transcribe any audio/video to SRT using local Whisper (FFmpeg built-in, 100%% offline)")
@@ -598,6 +623,8 @@ def main():
         run_doctor()
     elif args.command == "options":
         print_options()
+    elif args.command == "config":
+        run_config(args)
     elif args.command == "transcribe":
         run_transcribe(args)
     else:

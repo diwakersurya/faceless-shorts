@@ -7,7 +7,7 @@ import unittest
 from unittest import mock
 
 from faceless_shorts.config import VIDEO_ENGINES, DEFAULT_VIDEO_ENGINE
-from faceless_shorts.integrations import FastMetalClient
+from faceless_shorts.integrations import FastMetalClient, load_user_settings, save_user_settings
 from faceless_shorts.renderer import VideoRenderer
 from faceless_shorts.visuals import VisualManager
 
@@ -39,6 +39,46 @@ class TestVideoEngine(unittest.TestCase):
                 self.assertFalse(FastMetalClient.available())
                 visuals = VisualManager(cache_dir=os.path.join(tmp, "cache"))
                 self.assertIsNone(visuals.render_ai_video_clip("a fox", os.path.join(tmp, "clip.mp4"), 3.0))
+
+    def test_install_folder_is_remembered_and_problems_name_their_fix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {"FACELESS_SETTINGS_FILE": os.path.join(tmp, "cfg", "settings.json")}
+            with mock.patch.dict(os.environ, env):
+                os.environ.pop("FACELESS_FASTMETAL_HOME", None)
+                install = os.path.join(tmp, "install")
+                gone = os.path.join(tmp, "nowhere")
+                save_user_settings({"fastmetal_home": gone})
+                self.assertEqual(FastMetalClient().home, gone)
+                # No folder at all: the folder is named, not a file deep inside it.
+                path, fix = FastMetalClient().problem()
+                self.assertEqual(path, gone)
+                self.assertIn("--fastmetal-home", fix)
+                # The folder is there but empty: the first step still to do is the clone.
+                os.makedirs(install)
+                save_user_settings({"fastmetal_home": install})
+                path, fix = FastMetalClient().problem()
+                self.assertTrue(path.endswith("mlx_wan_prompt_to_video.py"))
+                self.assertIn("git clone", fix)
+                # The environment variable wins over the saved folder; clearing the setting forgets it.
+                with mock.patch.dict(os.environ, {"FACELESS_FASTMETAL_HOME": tmp}):
+                    self.assertEqual(FastMetalClient().home, tmp)
+                save_user_settings({"fastmetal_home": ""})
+                self.assertEqual(load_user_settings(), {})
+
+    def test_config_command_refuses_a_folder_that_is_not_there(self):
+        from faceless_shorts.cli import run_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"FACELESS_SETTINGS_FILE": os.path.join(tmp, "settings.json")}):
+                args = mock.Mock(fastmetal_home=os.path.join(tmp, "nowhere"))
+                with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                    run_config(args)
+                self.assertEqual(load_user_settings(), {})
+                args = mock.Mock(fastmetal_home=tmp)
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    run_config(args)
+                self.assertEqual(load_user_settings(), {"fastmetal_home": tmp})
+                self.assertIn("not ready", out.getvalue())
 
     def test_extra_args_env_override(self):
         with mock.patch.dict(os.environ, {}, clear=False):

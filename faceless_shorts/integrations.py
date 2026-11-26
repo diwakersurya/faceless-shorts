@@ -256,6 +256,39 @@ def model_cache_dir() -> str:
     return os.path.join(os.path.expanduser("~"), ".cache", "faceless-shorts", "models")
 
 
+def user_settings_path() -> str:
+    """Settings kept for this computer, shared by the CLI and the web app (override: FACELESS_SETTINGS_FILE)."""
+    return _env("FACELESS_SETTINGS_FILE") or os.path.join(
+        os.path.expanduser("~"), ".config", "faceless-shorts", "settings.json"
+    )
+
+
+def load_user_settings() -> Dict[str, Any]:
+    """Read the settings file; a missing or unreadable file is an empty dict."""
+    try:
+        with open(user_settings_path(), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_user_settings(changes: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge *changes* into the settings file. A value of None or "" removes that setting."""
+    settings = load_user_settings()
+    for key, value in changes.items():
+        if value in (None, ""):
+            settings.pop(key, None)
+        else:
+            settings[key] = value
+    path = user_settings_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(settings, handle, indent=2)
+        handle.write("\n")
+    return settings
+
+
 def _extract_json(text: Any) -> Optional[Dict[str, Any]]:
     """Pull the first JSON object out of possibly fenced / prose-wrapped text."""
     if not isinstance(text, str) or not text.strip():
@@ -335,16 +368,15 @@ class ToolRegistry:
         }
 
         # --- fastmetal: local text-to-video ---------------------------------
-        fastmetal = FastMetalClient()
-        fastmetal_missing = fastmetal.missing()
+        fastmetal_problem = FastMetalClient().problem()
         report["fastmetal"] = {
-            "available": not fastmetal_missing,
-            "version": None if fastmetal_missing else "1.3B-QAD",
+            "available": fastmetal_problem is None,
+            "version": "1.3B-QAD" if fastmetal_problem is None else None,
             "kind": "local text-to-video (Apple Silicon)",
             "install": "https://github.com/hao-ai-lab/FastVideo + hf download FastVideo/FastMetal-1.3B-QAD",
             "hint": (
-                f"missing {fastmetal_missing[0]} - set FACELESS_FASTMETAL_HOME"
-                if fastmetal_missing else "--video-engine fastmetal"
+                f"{fastmetal_problem[0]} does not exist. {fastmetal_problem[1]}"
+                if fastmetal_problem else "--video-engine fastmetal"
             ),
         }
 
@@ -753,8 +785,9 @@ class FastMetalClient:
 
     @property
     def home(self) -> str:
-        """Install root: explicit arg > FACELESS_FASTMETAL_HOME > ~/fastmetal-video."""
-        return os.path.expanduser(self._home or _env("FACELESS_FASTMETAL_HOME") or DEFAULT_FASTMETAL_HOME)
+        """Install root: explicit arg > FACELESS_FASTMETAL_HOME > saved setting > ~/fastmetal-video."""
+        saved = str(load_user_settings().get("fastmetal_home") or "")
+        return os.path.expanduser(self._home or _env("FACELESS_FASTMETAL_HOME") or saved or DEFAULT_FASTMETAL_HOME)
 
     def _paths(self) -> Tuple[str, str, str]:
         repo = os.path.join(self.home, "FastVideo")
@@ -764,9 +797,33 @@ class FastMetalClient:
             os.path.join(self.home, "FastMetal-1.3B-QAD"),
         )
 
+    def _checks(self) -> List[Tuple[str, str]]:
+        """Every path the install needs, outermost first, each with the command that creates it."""
+        python, script, model = self._paths()
+        repo = os.path.join(self.home, "FastVideo")
+        hf = os.path.join(repo, ".venv", "bin", "hf")
+        return [
+            (self.home, "Install FastMetal there (see the README), or say where it is: "
+                        "python -m faceless_shorts config --fastmetal-home <folder>"),
+            (script, "The FastVideo code is not there. Run: "
+                     f"git clone --depth 1 https://github.com/hao-ai-lab/FastVideo.git {shlex.quote(repo)}"),
+            (python, "FastVideo's Python environment was not created. Run: "
+                     f"cd {shlex.quote(repo)} && uv venv --python 3.12 --seed && "
+                     'uv pip install --python .venv/bin/python -e ".[mlx]"'),
+            (model, "The model is not downloaded. Run: "
+                    f"{shlex.quote(hf)} download FastVideo/FastMetal-1.3B-QAD --local-dir {shlex.quote(model)}"),
+        ]
+
     def missing(self) -> List[str]:
         """Paths the install lacks (empty list = ready to generate)."""
-        return [path for path in self._paths() if not os.path.exists(path)]
+        return [path for path, _ in self._checks() if not os.path.exists(path)]
+
+    def problem(self) -> Optional[Tuple[str, str]]:
+        """The first thing the install lacks, as (path, how to fix it). None when it is ready."""
+        for path, fix in self._checks():
+            if not os.path.exists(path):
+                return path, fix
+        return None
 
     @staticmethod
     def available() -> bool:
@@ -793,12 +850,9 @@ class FastMetalClient:
         portrait: bool = True,
     ) -> Optional[str]:
         """Render one silent clip covering *duration* seconds (at most ~5 s). None on any failure."""
-        missing = self.missing()
-        if missing:
-            print(
-                f"    [!] FastMetal is not installed: {missing[0]} not found. "
-                "Set FACELESS_FASTMETAL_HOME to the folder holding FastVideo/ and FastMetal-1.3B-QAD/."
-            )
+        problem = self.problem()
+        if problem:
+            print(f"    [!] FastMetal is not ready: {problem[0]} does not exist. {problem[1]}")
             return None
         python, script, model = self._paths()
         height, width = (832, 480) if portrait else (480, 832)
