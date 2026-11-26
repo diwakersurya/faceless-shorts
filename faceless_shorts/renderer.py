@@ -34,6 +34,8 @@ from faceless_shorts.config import (
     QUALITY_PROFILES,
     DEFAULT_QUALITY,
     DEFAULT_IMAGE_ENGINE,
+    VIDEO_ENGINES,
+    DEFAULT_VIDEO_ENGINE,
 )
 from faceless_shorts.script_generator import VideoScript
 from faceless_shorts.tts_engine import TTSEngine, WordTimestamp
@@ -62,6 +64,7 @@ class VideoRenderer:
         engine: str = DEFAULT_IMAGE_ENGINE,
         crf: Optional[int] = None,
         encoder_preset: Optional[str] = None,
+        video_engine: str = DEFAULT_VIDEO_ENGINE,
     ):
         self.language = (language or DEFAULT_LANGUAGE).lower()
 
@@ -82,6 +85,7 @@ class VideoRenderer:
         self.speech_rate = speech_rate
         self.work_dir = work_dir
         self.engine = engine or DEFAULT_IMAGE_ENGINE
+        self.video_engine = video_engine if video_engine in VIDEO_ENGINES else DEFAULT_VIDEO_ENGINE
 
         # Quality profile: fps / CRF / x264 preset / audio bitrate / canvas size
         profile = QUALITY_PROFILES.get(quality, QUALITY_PROFILES[DEFAULT_QUALITY])
@@ -319,11 +323,40 @@ class VideoRenderer:
             "shockwave_out", "pulse_heartbeat",
         ]
 
+        def clip_duration(i: int) -> float:
+            # When xfade is used, non-final clips have extra duration to provide overlap
+            dur = scene_timings[i][2]
+            return dur + trans_dur if (use_xfade and i < n_scenes - 1) else dur
+
+        # ------------------------------------------- optional AI video scene clips
+        # Real motion from the local video model instead of effects on a still image.
+        # A scene whose clip fails falls through to the image + Ken Burns path below.
+        ai_video_clips: Dict[int, str] = {}
+        if self.video_engine != "none":
+            for i, scene in enumerate(script.scenes):
+                clip_path = os.path.join(self.work_dir, f"clip_scene_{i+1:02d}.mp4")
+                print(f"    → Scene {i+1}/{n_scenes}: Generating {self.video_engine} video clip "
+                      f"({clip_duration(i):.2f}s, takes a few minutes)...")
+                if self.visuals.render_ai_video_clip(
+                    prompt=scene.visual_prompt,
+                    output_video_path=clip_path,
+                    duration=clip_duration(i),
+                    fps=self.fps,
+                    width=self.width,
+                    height=self.height,
+                ):
+                    ai_video_clips[i] = clip_path
+                else:
+                    print(f"    [!] Scene {i+1}: video clip unavailable, using image + Ken Burns instead.")
+
         # ---------------------------------------------------- resolve raw images
         raw_image_paths: List[str] = []
         ai_job_queue: List[Dict] = []
         for i, scene in enumerate(script.scenes):
             img_path = os.path.join(self.work_dir, f"image_scene_{i+1:02d}.jpg")
+            if i in ai_video_clips:
+                raw_image_paths.append(img_path)  # placeholder, never read
+                continue
             resolved, source = self._resolve_scene_image(
                 script, i, img_path, enable_ai_images, custom_images_dir
             )
@@ -346,9 +379,10 @@ class VideoRenderer:
         # ------------------------------------------- style transform + Ken Burns
         scene_video_clips: List[str] = []
         for i, scene in enumerate(script.scenes):
-            dur = scene_timings[i][2]
-            # When xfade is used, non-final clips have extra duration to provide overlap
-            clip_dur = dur + trans_dur if (use_xfade and i < n_scenes - 1) else dur
+            if i in ai_video_clips:
+                scene_video_clips.append(ai_video_clips[i])
+                continue
+            clip_dur = clip_duration(i)
             motion = scene.motion or motion_rotation[i % len(motion_rotation)]
 
             src_image = raw_image_paths[i]

@@ -1064,6 +1064,13 @@ IMAGE_ENGINES = {
 }
 DEFAULT_IMAGE_ENGINE = "pollinations"
 
+# Scene video engines. `none` keeps the classic still image + Ken Burns motion.
+VIDEO_ENGINES = {
+    "none": "Still image + Ken Burns camera motion",
+    "fastmetal": "Local FastMetal 1.3B text-to-video (Apple Silicon, free & private, real motion)"
+}
+DEFAULT_VIDEO_ENGINE = "none"
+
 # Auto-Emoji keyword triggers
 EMOJI_KEYWORDS = {
     "brain": "🧠", "mind": "🧠", "think": "🧠", "psychology": "🧠", "memory": "🧠",

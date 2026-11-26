@@ -25,6 +25,8 @@ from faceless_shorts.config import (
     DEFAULT_QUALITY,
     IMAGE_ENGINES,
     DEFAULT_IMAGE_ENGINE,
+    VIDEO_ENGINES,
+    DEFAULT_VIDEO_ENGINE,
 )
 from faceless_shorts.postfx import PostFX
 from faceless_shorts.vfx import VFX_PRESETS
@@ -315,6 +317,7 @@ def run_generate(args):
         f"[bold white]VFX & Animations:[/bold white] [yellow]{args.vfx or 'none'}[/yellow]\n"
         f"[bold white]Quality:[/bold white] [green]{args.quality} ({profile['width']}x{profile['height']} @ {args.fps or profile['fps']}fps, crf {profile['crf']})[/green]\n"
         f"[bold white]Image Engine:[/bold white] {'Procedural (offline)' if args.offline else IMAGE_ENGINES.get(args.engine, args.engine)}\n"
+        f"[bold white]Scene Video:[/bold white] {VIDEO_ENGINES.get(args.video_engine, args.video_engine)}\n"
         f"[bold white]Audio:[/bold white] {'Clean Studio Voice (Zero Background Sound)' if (not args.music or args.music == 'none') else f'{args.music} (Ducked, -14 LUFS)'}",
         title="🎬 Production Brief",
         border_style="green"
@@ -339,6 +342,7 @@ def run_generate(args):
         engine="procedural" if args.offline else args.engine,
         crf=args.crf,
         encoder_preset=args.encoder_preset,
+        video_engine=args.video_engine,
     )
 
     rendered_file = renderer.render(
@@ -365,6 +369,59 @@ def run_generate(args):
         title="✨ Ready to Post on YouTube Shorts, TikTok & Reels",
         border_style="bold green"
     ))
+
+def print_options():
+    """Print every choice the generate command accepts as JSON (read by the web UI)."""
+    from faceless_shorts.integrations import FastMetalClient
+
+    fastmetal_missing = FastMetalClient().missing()
+    options = {
+        "presets": [{"value": key, "label": t.title, "scenes": len(t.scenes)} for key, t in VIRAL_TEMPLATES.items()],
+        "languages": [
+            {"value": key, "label": lang["name"], "defaultVoice": lang["default_voice"], "voices": lang["voices"]}
+            for key, lang in LANGUAGES.items()
+        ],
+        "voices": [
+            {"value": key, "label": key.title(), "description": f"{voice['gender']}, {voice['vibe']}", "language": voice["language"]}
+            for key, voice in VOICES.items()
+        ],
+        "subtitleStyles": [{"value": key, "label": s["name"], "description": s["description"]} for key, s in SUBTITLE_STYLES.items()],
+        "artStyles": [
+            {"value": key, "label": s["name"], "description": s["description"], "category": s["category"]}
+            for key, s in ART_STYLES.items()
+        ],
+        "transitions": [{"value": key, "label": t["name"], "description": t["description"]} for key, t in TRANSITIONS.items()],
+        "effects": [{"value": "none", "label": "None", "description": "No grade"}] + [
+            {"value": pack, "label": pack.replace("_", " ").title(), "description": ", ".join(members)}
+            for pack, members in PostFX.PACKS.items() if members
+        ],
+        "qualities": [
+            {"value": key, "label": key.title(), "description": f"{q['width']}x{q['height']} at {q['fps']} fps"}
+            for key, q in QUALITY_PROFILES.items()
+        ],
+        "music": ["none", "dark_tension", "curiosity_ambient", "cinematic_pulse", "sub_bass_808"],
+        "imageEngines": [{"value": key, "label": label} for key, label in IMAGE_ENGINES.items()],
+        "videoEngines": [{"value": key, "label": label} for key, label in VIDEO_ENGINES.items()],
+        "fastmetal": {
+            "available": not fastmetal_missing,
+            "home": FastMetalClient().home,
+            "missing": fastmetal_missing[0] if fastmetal_missing else None,
+        },
+        "defaults": {
+            "language": DEFAULT_LANGUAGE,
+            "voice": LANGUAGES[DEFAULT_LANGUAGE]["default_voice"],
+            "subtitleStyle": "hormozi",
+            "artStyle": "hyperreal",
+            "transition": DEFAULT_TRANSITION,
+            "effects": "none",
+            "quality": DEFAULT_QUALITY,
+            "music": "none",
+            "imageEngine": DEFAULT_IMAGE_ENGINE,
+            "videoEngine": DEFAULT_VIDEO_ENGINE,
+        },
+    }
+    print(json.dumps(options, ensure_ascii=False))
+
 
 def run_doctor():
     """Diagnose every optional free-tool integration and print a health table."""
@@ -481,6 +538,7 @@ def main():
     gen_parser.add_argument("--crf", type=int, default=None, help="Override x264 CRF quality (lower = better, 15-28)")
     gen_parser.add_argument("--encoder-preset", type=str, default=None, choices=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"], help="Override x264 encoder speed/quality preset")
     gen_parser.add_argument("--engine", type=str, default=DEFAULT_IMAGE_ENGINE, choices=list(IMAGE_ENGINES.keys()), help="Image generation engine (pollinations, comfyui, procedural)")
+    gen_parser.add_argument("--video-engine", type=str, default=DEFAULT_VIDEO_ENGINE, choices=list(VIDEO_ENGINES.keys()), help="Scene video engine: 'fastmetal' generates a real-motion AI clip per scene with a local model (Apple Silicon, minutes per scene) instead of Ken Burns motion on a still image")
     gen_parser.add_argument("-o", "--output", type=str, help="Output MP4 file path")
     gen_parser.add_argument("--script-json", type=str, help="Path to custom JSON script file")
     gen_parser.add_argument("--images-dir", type=str, help="Path to folder containing scene_01.jpg, scene_02.jpg, etc.")
@@ -501,6 +559,7 @@ def main():
     subparsers.add_parser("presets", help="List viral script presets")
     subparsers.add_parser("prompt", help="Print LLM system prompt for Claude/Gemini/OpenCode")
     subparsers.add_parser("doctor", help="Diagnose free tool integrations (ffmpeg, whisper, comfyui, yt-dlp, ollama, ...)")
+    subparsers.add_parser("options", help="Print every generate choice as JSON (used by the web UI)")
 
     # transcribe command (local Whisper via FFmpeg)
     tr_parser = subparsers.add_parser("transcribe", help="Transcribe any audio/video to SRT using local Whisper (FFmpeg built-in, 100%% offline)")
@@ -537,6 +596,8 @@ def main():
         console.print(Panel(LLM_SYSTEM_PROMPT, title="🤖 System Prompt for LLMs (Claude/Gemini/OpenCode)", border_style="cyan"))
     elif args.command == "doctor":
         run_doctor()
+    elif args.command == "options":
+        print_options()
     elif args.command == "transcribe":
         run_transcribe(args)
     else:

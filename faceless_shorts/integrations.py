@@ -14,6 +14,8 @@ Projects credited (all free / open source):
   https://github.com/ggerganov/whisper.cpp
 - ComfyUI — local Stable Diffusion txt2img node UI
   https://github.com/comfyanonymous/ComfyUI
+- FastVideo / FastMetal — local Apple Silicon (MLX) text-to-video
+  https://github.com/hao-ai-lab/FastVideo
 - yt-dlp — feature-rich media downloader (B-roll / reference footage)
   https://github.com/yt-dlp/yt-dlp
 - Ollama — local LLM runtime for script writing
@@ -30,9 +32,11 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import random
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -48,6 +52,7 @@ __all__ = [
     "ToolRegistry",
     "WhisperTranscriber",
     "ComfyUIClient",
+    "FastMetalClient",
     "YtDlpHelper",
     "LLMScriptWriter",
     "StockBRoll",
@@ -69,8 +74,16 @@ COMFY_POLL_INTERVAL = 0.5       # seconds between /history polls
 COMFY_POLL_TIMEOUT = 120.0      # total seconds to wait for a ComfyUI render
 YTDLP_TIMEOUT = 300.0           # cap for a single yt-dlp download
 TRANSCRIBE_TIMEOUT = 600.0      # cap for an ffmpeg whisper transcription
+FASTMETAL_TIMEOUT = 1800.0      # cap for one FastMetal scene clip (text encode + denoise + decode)
 
 DEFAULT_COMFY_URL = "http://127.0.0.1:8188"
+DEFAULT_FASTMETAL_HOME = "~/fastmetal-video"
+# --fast generates half the frames and interpolates the rest; a 16-18 GB Mac needs it
+# (the full-frame decode runs out of GPU memory). Bigger Macs can set FACELESS_FASTMETAL_ARGS="".
+DEFAULT_FASTMETAL_ARGS = "--fast"
+FASTMETAL_FPS = 16              # native frame rate of the Wan 2.1 1.3B model
+FASTMETAL_MAX_FRAMES = 81       # longest validated clip (~5 s)
+FASTMETAL_MIN_FRAMES = 17
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_CHECKPOINT = "v1-5-pruned-emaonly.safetensors"
 DEFAULT_NEGATIVE_PROMPT = "lowres, blurry, watermark, text"
@@ -78,7 +91,7 @@ HF_WHISPER_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
 
 # Tool keys reported by doctor() / doctor_report().
-TOOL_KEYS: Tuple[str, ...] = ("whisper", "comfyui", "ytdlp", "llm", "stock")
+TOOL_KEYS: Tuple[str, ...] = ("whisper", "comfyui", "fastmetal", "ytdlp", "llm", "stock")
 
 # rich is an optional dependency; plain aligned text is the fallback.
 try:  # pragma: no cover - exercised implicitly when rich is installed
@@ -321,6 +334,20 @@ class ToolRegistry:
             "hint": "run it on :8188 or set FACELESS_COMFY_URL",
         }
 
+        # --- fastmetal: local text-to-video ---------------------------------
+        fastmetal = FastMetalClient()
+        fastmetal_missing = fastmetal.missing()
+        report["fastmetal"] = {
+            "available": not fastmetal_missing,
+            "version": None if fastmetal_missing else "1.3B-QAD",
+            "kind": "local text-to-video (Apple Silicon)",
+            "install": "https://github.com/hao-ai-lab/FastVideo + hf download FastVideo/FastMetal-1.3B-QAD",
+            "hint": (
+                f"missing {fastmetal_missing[0]} - set FACELESS_FASTMETAL_HOME"
+                if fastmetal_missing else "--video-engine fastmetal"
+            ),
+        }
+
         # --- yt-dlp: media downloader ---------------------------------------
         ytdlp_version = YtDlpHelper.version()
         report["ytdlp"] = {
@@ -373,6 +400,7 @@ class ToolRegistry:
         handlers = {
             "whisper": WhisperTranscriber.available,
             "comfyui": ComfyUIClient().available,
+            "fastmetal": FastMetalClient.available,
             "ytdlp": YtDlpHelper.available,
             "llm": LLMScriptWriter.available,
             "stock": StockBRoll.available,
@@ -706,6 +734,107 @@ class ComfyUIClient:
             )
         except Exception:
             return None
+
+
+# --------------------------------------------------------------------------- #
+# FastMetal (local Apple Silicon text-to-video via the FastVideo MLX runtime)
+# --------------------------------------------------------------------------- #
+class FastMetalClient:
+    """Runs a local FastMetal-1.3B install as a subprocess (it lives in its own venv).
+
+    Expected layout under the install root::
+
+        <home>/FastVideo/            clone of github.com/hao-ai-lab/FastVideo with a .venv
+        <home>/FastMetal-1.3B-QAD/   hf download FastVideo/FastMetal-1.3B-QAD
+    """
+
+    def __init__(self, home: Optional[str] = None) -> None:
+        self._home = (home or "").strip() or None
+
+    @property
+    def home(self) -> str:
+        """Install root: explicit arg > FACELESS_FASTMETAL_HOME > ~/fastmetal-video."""
+        return os.path.expanduser(self._home or _env("FACELESS_FASTMETAL_HOME") or DEFAULT_FASTMETAL_HOME)
+
+    def _paths(self) -> Tuple[str, str, str]:
+        repo = os.path.join(self.home, "FastVideo")
+        return (
+            os.path.join(repo, ".venv", "bin", "python"),
+            os.path.join(repo, "examples", "inference", "basic", "mlx_wan_prompt_to_video.py"),
+            os.path.join(self.home, "FastMetal-1.3B-QAD"),
+        )
+
+    def missing(self) -> List[str]:
+        """Paths the install lacks (empty list = ready to generate)."""
+        return [path for path in self._paths() if not os.path.exists(path)]
+
+    @staticmethod
+    def available() -> bool:
+        """True when the FastVideo venv, the generate script and the model are all present."""
+        return not FastMetalClient().missing()
+
+    @staticmethod
+    def extra_args() -> List[str]:
+        """Extra generator flags: FACELESS_FASTMETAL_ARGS when set (even empty), else --fast."""
+        raw = os.environ.get("FACELESS_FASTMETAL_ARGS")
+        return shlex.split(DEFAULT_FASTMETAL_ARGS if raw is None else raw)
+
+    @staticmethod
+    def frames_for(duration: float) -> int:
+        """Frames to request for *duration* seconds: 16 fps, on the model's 4k+1 grid, capped at 81."""
+        need = max(FASTMETAL_MIN_FRAMES, math.ceil(max(duration, 0.0) * FASTMETAL_FPS))
+        return min(FASTMETAL_MAX_FRAMES, (need + 2) // 4 * 4 + 1)
+
+    def generate(
+        self,
+        prompt: str,
+        output_path: str,
+        duration: float,
+        portrait: bool = True,
+    ) -> Optional[str]:
+        """Render one silent clip covering *duration* seconds (at most ~5 s). None on any failure."""
+        missing = self.missing()
+        if missing:
+            print(
+                f"    [!] FastMetal is not installed: {missing[0]} not found. "
+                "Set FACELESS_FASTMETAL_HOME to the folder holding FastVideo/ and FastMetal-1.3B-QAD/."
+            )
+            return None
+        python, script, model = self._paths()
+        height, width = (832, 480) if portrait else (480, 832)
+        output_path = os.path.abspath(output_path)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        if os.path.exists(output_path):
+            os.remove(output_path)  # a stale clip must not pass for a fresh one
+        cmd = [
+            python, script,
+            "--model-root", model,
+            "--mlx-checkpoint", model,
+            "--prompt", prompt,
+            "--height", str(height),
+            "--width", str(width),
+            "--num-frames", str(self.frames_for(duration)),
+            # The 11 GB text encoder runs in its own process so its memory is freed before denoising.
+            "--prompt-encode-mode", "subprocess",
+            "--output-path", output_path,
+            *self.extra_args(),
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=os.path.join(self.home, "FastVideo"),
+                capture_output=True,
+                text=True,
+                timeout=FASTMETAL_TIMEOUT,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"    [!] FastMetal could not run ({exc}).")
+            return None
+        if proc.returncode != 0 or not os.path.exists(output_path):
+            lines = (proc.stderr or proc.stdout or "").strip().splitlines()
+            print(f"    [!] FastMetal failed: {lines[-1] if lines else 'no output'}")
+            return None
+        return output_path
 
 
 # --------------------------------------------------------------------------- #

@@ -5,6 +5,7 @@ offline PIL art-style transforms (pixel art, chalkboard, glow sketch, halftone, 
 artistic FFmpeg grading, and punchy dynamic Ken Burns motion video synthesis.
 """
 
+import hashlib
 import math
 import os
 import random
@@ -198,6 +199,66 @@ class VisualManager:
         except Exception as e:
             print(f"    [!] Style transform '{pixel_op}' failed ({e}). Using raw visual.")
             return image_path
+
+    # --------------------------------------------------------------- AI VIDEO
+    def render_ai_video_clip(
+        self,
+        prompt: str,
+        output_video_path: str,
+        duration: float,
+        fps: Optional[int] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None
+    ) -> Optional[str]:
+        """
+        Generate a real-motion scene clip with the local FastMetal video model and fit it
+        to the canvas, frame rate and scene duration. Returns None on any failure so the
+        caller can fall back to the image + Ken Burns path.
+        """
+        from faceless_shorts.integrations import FastMetalClient, FASTMETAL_FPS
+
+        fps = fps or self.fps
+        width = width or self.width
+        height = height or self.height
+        style_config = ART_STYLES.get(self.art_style, ART_STYLES["hyperreal"])
+        full_prompt = f"{prompt}, {style_config['prompt_suffix']}"
+        portrait = height >= width
+        frames = FastMetalClient.frames_for(duration)
+
+        # Generation takes minutes per scene, so raw clips are cached by what produced them.
+        key = "|".join([full_prompt, str(frames), str(portrait), *FastMetalClient.extra_args()])
+        raw_path = os.path.join(self.cache_dir, f"fastmetal_{hashlib.sha1(key.encode()).hexdigest()[:16]}.mp4")
+        if not os.path.exists(raw_path):
+            if not FastMetalClient().generate(full_prompt, raw_path, duration, portrait=portrait):
+                return None
+
+        # The model tops out at ~5 s: longer scenes are slowed down to fill their duration.
+        # TODO: chain a second clip (or interpolate frames) if slow motion on 6s+ scenes looks choppy.
+        stretch = max(1.0, duration / (frames / FASTMETAL_FPS))
+        art_filter = style_config.get("ffmpeg_filter", "eq=contrast=1.05:saturation=1.05")
+        fit_filter = (
+            f"setpts={stretch:.4f}*PTS,"
+            f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
+            f"crop={width}:{height},fps={fps},{art_filter},format=yuv420p"
+        )
+        os.makedirs(os.path.dirname(os.path.abspath(output_video_path)), exist_ok=True)
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", raw_path,
+            "-vf", fit_filter,
+            "-t", str(duration),
+            "-an",
+            "-c:v", "libx264",
+            "-preset", "faster",
+            "-pix_fmt", "yuv420p",
+            output_video_path
+        ]
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"    [!] Could not fit the generated clip ({e}).")
+            return None
+        return output_video_path
 
     # -------------------------------------------------------------- KEN BURNS
     def render_ken_burns_clip(
