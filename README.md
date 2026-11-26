@@ -239,9 +239,10 @@ View effects: `python -m faceless_shorts effects`
 | **mflux** (FLUX.2 klein 4B, Z-Image-Turbo) | `--engine flux2-klein` or `--engine z-image-turbo`: scene images from a local model, no rate limit (setup in the next section) | Free, offline (Apple Silicon, 16 GB+) |
 | **FastMetal 1.3B** (FastVideo MLX) | `--video-engine fastmetal` real-motion AI clip per scene instead of Ken Burns on a still image (setup two sections below) | Free, offline (Apple Silicon, 16 GB+) |
 | **Ollama** | Local LLM script generation (no OpenAI key) | Free, offline |
+| **Gemini API** (optional, online) | `--script-engine gemini`, `--tts-engine gemini`, `--engine gemini`, `--video-engine gemini`: script, voice-over, images and real-motion clips from Google's models (see *Online Mode with Gemini*) | Script and voice-over: free limits. Images and video: paid |
 | **Pexels / Pixabay keys** | Stock video/image backgrounds (optional keys) | Free tier |
 
-**Open-source contributors**: All tools are free and open-source — no restrictions or paywalls.
+**Open-source contributors**: All tools are free and open-source — no restrictions or paywalls. The one exception is the optional Gemini mode, which is off unless you choose it.
 
 ---
 
@@ -264,7 +265,7 @@ python -m faceless_shorts doctor           # the "mflux" row must say OK
 python -m faceless_shorts generate --niche stoicism --engine flux2-klein
 ```
 
-The model is downloaded the first time its engine is used. In the web app, pick the model under *More options → Still images come from*; an engine that cannot run on this computer stays in the list, switched off, with what it needs.
+The model is downloaded the first time its engine is used. In the web app, pick the model under *Who makes each part → Images*; an engine that cannot run on this computer stays in the list, switched off, with what it needs.
 
 | What you see | Why | Fix |
 | :--- | :--- | :--- |
@@ -397,6 +398,107 @@ Each of these happened on an M3 Pro MacBook with 18 GB of memory.
 
 ---
 
+## 🌐 Online Mode with Gemini (Google AI Pro)
+
+Everything above is free and, with the local models, runs on your own computer. If you would rather have Google's models do the work, each of the four parts of a short (script, voice-over, images, video) can be sent to the [Gemini API](https://ai.google.dev/gemini-api/docs). Each part is chosen on its own, so they mix freely with the free and local engines, and nothing changes unless you ask for one.
+
+| What | Flag | Model | Cost (Google's list price, November 2026) |
+| :--- | :--- | :--- | :--- |
+| Script for a `--topic` | `--script-engine gemini` | Gemini 4 Hydrogen (`gemini-4-hydrogen`) | Free within Google's free limits; a few cents at most on a paid key |
+| Voice-over | `--tts-engine gemini` | Gemini 3.8 Flash TTS (`gemini-3.8-flash-tts`) | Free within Google's free limits; about a cent a short on a paid key |
+| Scene images | `--engine gemini` | Nano Banana 2.1 (`gemini-nano-banana-2.1`) | About $0.03 an image: about $0.20 for a 6-scene short |
+| Real-motion scene clips | `--video-engine gemini` | Gemini Omni Flash (`gemini-omni-1.2-flash`) | About $0.07 a second at 720p: about $3.40 for a 45-second short ($1.10 at 360p) |
+
+### What the membership does and does not give you
+
+A Google AI Pro membership does not by itself let a program use Gemini. Its daily allowance works only inside the Gemini app and the [AI Studio](https://aistudio.google.com) website. A program like this one needs an **API key**, and the API is billed separately, by use.
+
+What the membership adds is **$10 of API credit every month**, which you claim in AI Studio and which then pays for this tool ([Google's page on this](https://ai.google.dev/gemini-api/docs/google-ai-plans)). At the prices above, $10 is about 50 shorts with Gemini images, or about 3 shorts made entirely of Gemini video at 720p (about 9 at 360p). Past the credit, Google charges the billing account.
+
+Without a membership, a free API key is enough for the script and the voice-over. Images and video have no free allowance.
+
+### 1. Get the key and claim the credit (once)
+
+1. Subscribe to Google AI Pro with a personal Google account. The credit goes only to the main subscriber, not to family members, and not to Google Workspace accounts.
+2. In [AI Studio](https://aistudio.google.com), signed in with the same account, click **Claim free API credits**, keep the project and key it offers, and click **Set up billing**. A new prepaid billing account asks for a $5 deposit; Google spends the credit before it touches the deposit.
+3. Click **Redeem**, and leave *Auto-apply future credits* ticked so each month's $10 arrives without another visit.
+4. Recommended: set a monthly limit on the [Spend page](https://aistudio.google.com/spend), so a mistake cannot cost more than you decided.
+5. Copy the key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+
+### 2. Save the key
+
+```bash
+python -m faceless_shorts config --gemini-key -     # paste the key, press Enter
+```
+
+The `-` reads the key from the keyboard, which keeps it out of your shell history. Google is asked whether it accepts the key before it is saved. In the web app, the same thing is done under Settings (the gear, top right). A key in `GEMINI_API_KEY` or `GOOGLE_API_KEY` is used when none is saved.
+
+The key is kept in `~/.config/faceless-shorts/settings.json`, readable only by you. It is never written to the repository and never sent to the web page.
+
+### 3. Confirm it is ready
+
+```bash
+python -m faceless_shorts config      # "Gemini: key ending in ..., Google accepts the key."
+python -m faceless_shorts doctor      # the "gemini" row must say OK
+```
+
+### 4. Make a short: mix and match
+
+Every part has its own flag, and any choice for one part works with any choice for the others:
+
+| Part | Flag | Choices |
+| :--- | :--- | :--- |
+| Script | `--script-engine` | `auto` (built-in writer), `gemini` |
+| Voice-over | `--tts-engine` | `edge` (Microsoft Edge-TTS), `gemini` |
+| Images | `--engine` | `pollinations`, `comfyui`, `flux2-klein`, `z-image-turbo`, `gemini`, `procedural` |
+| Video | `--video-engine` | `none` (camera motion on the image), `fastmetal`, `gemini` |
+
+```bash
+# Free: Gemini writes and speaks, the images come from the local model
+python -m faceless_shorts generate --topic "why foxes hunt at dawn" --script-engine gemini --tts-engine gemini --voice Kore --engine flux2-klein
+
+# Gemini script and Gemini images, the usual Edge voice (about $0.20)
+python -m faceless_shorts generate --topic "why foxes hunt at dawn" --script-engine gemini --engine gemini
+
+# A ready-made script with a Gemini video clip for each scene (about $3.40)
+python -m faceless_shorts generate --niche stoicism --video-engine gemini
+
+# Everything from Gemini
+python -m faceless_shorts generate --topic "why foxes hunt at dawn" --script-engine gemini --tts-engine gemini --engine gemini --video-engine gemini
+```
+
+In the web app these are the four lists under *Who makes each part*: Script, Voice-over, Images and Video. Without a key the Gemini choices stay in the lists, switched off, with what they need.
+
+### What to expect
+
+- **Script**: Gemini writes the title, hook, 4 to 7 scenes with an image prompt and a camera move each, in the language you chose. `--niche` presets and `--script-json` keep their own script.
+- **Voice-over**: Gemini has 30 voices of its own (`--voice Kore`, `Charon`, `Puck`, ...; the web app lists them all), and each speaks whatever language the script is in. Gemini does not say when each word is spoken, which the subtitles need, so the finished voice-over is sent to Gemini's transcription model, which does (also free). `--rate` has no effect on a Gemini voice.
+- **Video**: one clip per scene. Gemini makes whole seconds from 3 to 15, so each clip is asked for at the next whole second and trimmed to the scene. The sound Gemini adds is dropped: the voiceover and music come from this tool. Before the first clip, the log says how many seconds will be generated and what that costs.
+- **Nothing is paid for twice**: generated images and clips are kept in `.temp_render/cache`. Rendering the same script again, for a different subtitle style say, reuses them.
+- **A failed request never stops the short**: a refused script falls back to the built-in writer, a refused voice-over to Edge-TTS, a refused clip to an image with camera motion, a refused image to the free image engine. The log says why each time.
+- **What goes to Google**: the topic, the script and the scene prompts. On a free key Google may use them to improve its products; on a paid key it does not (the "Used to improve our products" row of [Google's price list](https://ai.google.dev/gemini-api/docs/pricing)).
+- **How far this was tested** (November 2026): script writing and the voice-over were run against Google, on a free key. Image and video requests follow Google's documented format and were run against a local stand-in for the API, because they need a paid key.
+
+| Setting | What it does |
+| :--- | :--- |
+| `GEMINI_TEXT_MODEL`, `GEMINI_TTS_MODEL`, `GEMINI_TRANSCRIBE_MODEL`, `GEMINI_IMAGE_MODEL`, `GEMINI_VIDEO_MODEL` | Use another model id. Google retires models every few months; this avoids waiting for a code change |
+| `GEMINI_VIDEO_RESOLUTION` | `360p` (about $0.023 a second), `720p` (the default) or `1080p` (about $0.10 a second) |
+| `GEMINI_API_URL` | Send the requests to another address that speaks the same API |
+
+### Problems and their fixes
+
+| What you see | Why | Fix |
+| :--- | :--- | :--- |
+| `Rate limit exceeded ... (limit: 0 ... on Free Tier)` | The key has no billing. Images and video have no free allowance | Step 1: claim the credit and set up billing for the key's project |
+| `Gemini (gemini-4-hydrogen) is busy right now`, then `Asking gemini-3.5-flash-lite instead` | Google's newest text model was overloaded (common on free keys) | Nothing: the script comes from the second model |
+| `Gemini (...) is busy right now` for an image or a clip | Google was overloaded for that request | Run the same command again: what was already made is reused |
+| `Rate limit exceeded for model gemini-3.8-flash-tts (limit: 3 requests per minute on Free Tier)` | A free key allows three voice-overs a minute | That short is spoken by Edge-TTS instead. Wait a minute before the next one, or set up billing |
+| `Word times could not be learned, so they are estimated` | The transcription request failed | Subtitles may run a little early or late in that short. Run it again for exact timing |
+| `Google does not accept this key` | The key was mistyped, deleted, or belongs to another service | Copy it again from aistudio.google.com/apikey |
+| `Gemini (...) refused:` with a message that the model is not found or no longer served | Google retired the model | Set the matching `GEMINI_..._MODEL` variable to its replacement from [Google's model list](https://ai.google.dev/gemini-api/docs/models) |
+
+---
+
 ## 🖥️ Web App
 
 A local page for making shorts without the command line: fill in a form, watch the progress, then play, download or delete the results. It is built with React and the [Astryx](https://github.com/meta/astryx) design system and answers only on your own computer, unless you open it to your own devices with Tailscale (below).
@@ -408,7 +510,8 @@ bun run serve      # then open http://127.0.0.1:4780
 ```
 
 - **New short**: your own topic or a ready-made script, language and voice, art and subtitle style; transition, colour grade, quality, music and the progress bar are under *More options*.
-- **AI video scenes**: the *Generate scenes as AI video* switch uses the local FastMetal model (see the section above). When it is not ready, Settings (the gear, top right) says what is missing and the command that fixes it.
+- **Who makes each part**: four lists, one each for the Script, the Voice-over, the Images and the Video, so free, local and online engines can be mixed in one short. An engine that cannot be used on this computer stays in its list, switched off, with what it needs.
+- **Settings** (the gear, top right): where FastMetal is installed and the Gemini API key. It says what is missing and the command that fixes it; the key is hidden as you type and is never shown again.
 - **Progress**: the five steps of the render, the scene being made, the full log, and a Stop button. One short is made at a time.
 - **Your shorts**: every video in `output/`. Open one to play it, copy its title, caption and tags, download it or delete it.
 

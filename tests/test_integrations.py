@@ -27,7 +27,7 @@ from faceless_shorts.integrations import (
 )
 
 # The exact tool keys the registry must report.
-EXPECTED_TOOLS = ("whisper", "comfyui", "mflux", "fastmetal", "ytdlp", "llm", "stock")
+EXPECTED_TOOLS = ("whisper", "comfyui", "mflux", "fastmetal", "gemini", "ytdlp", "llm", "stock")
 # Every doctor() entry must carry these keys.
 INFO_KEYS = ("available", "version", "kind", "install", "hint")
 # Env vars that could leak real credentials / endpoints into the tests.
@@ -38,6 +38,8 @@ LEAKY_ENV = (
     "LLM_BASE_URL",
     "LLM_API_KEY",
     "LLM_MODEL",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
     "FACELESS_COMFY_URL",
     "FACELESS_MODELS_DIR",
     "FACELESS_STOCK_DIR",
@@ -264,6 +266,7 @@ class DoctorReportTests(unittest.TestCase):
             "ComfyUIClient",
             "FastMetalClient",
             "MfluxClient",
+            "GeminiClient",
             "YtDlpHelper",
             "LLMScriptWriter",
             "StockBRoll",

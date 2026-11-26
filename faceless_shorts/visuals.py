@@ -9,6 +9,7 @@ import hashlib
 import math
 import os
 import random
+import shutil
 import subprocess
 import time
 import urllib.parse
@@ -69,6 +70,7 @@ class VisualManager:
           - pollinations: keyless cloud Flux generation
           - comfyui: local ComfyUI instance (private, GPU, free)
           - flux2-klein / z-image-turbo: local image model on Apple Silicon (private, free)
+          - gemini: Google's online image model (paid per image)
           - procedural: offline Pillow canvas (zero network)
         Always degrades to the procedural canvas so rendering never fails.
         """
@@ -87,6 +89,20 @@ class VisualManager:
             if path:
                 return path
             print("    [!] Local image model unavailable, falling back to Pollinations Flux.")
+
+        if self.engine == "gemini":
+            from faceless_shorts.integrations import GeminiClient
+            client = GeminiClient()
+            style_config = ART_STYLES.get(self.art_style, ART_STYLES["hyperreal"])
+            full_prompt = f"{prompt}, {style_config['prompt_suffix']}"
+            portrait = self.height >= self.width
+            # Every image is paid for, so it is kept by what produced it and reused on the next render.
+            key = "|".join([full_prompt, client.model("image"), str(portrait)])
+            cached = os.path.join(self.cache_dir, f"gemini_{hashlib.sha1(key.encode()).hexdigest()[:16]}.jpg")
+            if os.path.exists(cached) or client.generate_image(full_prompt, cached, portrait=portrait):
+                shutil.copyfile(cached, output_path)
+                return output_path
+            print("    [!] Gemini image unavailable, falling back to Pollinations Flux.")
 
         if self.engine == "comfyui":
             try:
@@ -226,14 +242,16 @@ class VisualManager:
         duration: float,
         fps: Optional[int] = None,
         width: Optional[int] = None,
-        height: Optional[int] = None
+        height: Optional[int] = None,
+        engine: str = "fastmetal"
     ) -> Optional[str]:
         """
-        Generate a real-motion scene clip with the local FastMetal video model and fit it
-        to the canvas, frame rate and scene duration. Returns None on any failure so the
-        caller can fall back to the image + Ken Burns path.
+        Generate a real-motion scene clip with a video model (*engine*: the local FastMetal
+        model, or "gemini" for Google's online one) and fit it to the canvas, frame rate and
+        scene duration. Returns None on any failure so the caller can fall back to the
+        image + Ken Burns path.
         """
-        from faceless_shorts.integrations import FastMetalClient, FASTMETAL_FPS
+        from faceless_shorts.integrations import FastMetalClient, FASTMETAL_FPS, GeminiClient
 
         fps = fps or self.fps
         width = width or self.width
@@ -241,18 +259,28 @@ class VisualManager:
         style_config = ART_STYLES.get(self.art_style, ART_STYLES["hyperreal"])
         full_prompt = f"{prompt}, {style_config['prompt_suffix']}"
         portrait = height >= width
-        frames = FastMetalClient.frames_for(duration)
 
-        # Generation takes minutes per scene, so raw clips are cached by what produced them.
-        key = "|".join([full_prompt, str(frames), str(portrait), *FastMetalClient.extra_args()])
-        raw_path = os.path.join(self.cache_dir, f"fastmetal_{hashlib.sha1(key.encode()).hexdigest()[:16]}.mp4")
+        if engine == "gemini":
+            client = GeminiClient()
+            full_prompt += ". No captions or text on screen."  # the subtitles are added later, by this tool
+            clip_seconds = float(client.seconds_for(duration))
+            made_by = [str(clip_seconds), str(portrait), client.model("video"), client.video_resolution()]
+        else:
+            client = FastMetalClient()
+            frames = FastMetalClient.frames_for(duration)
+            clip_seconds = frames / FASTMETAL_FPS
+            made_by = [str(frames), str(portrait), *FastMetalClient.extra_args()]
+
+        # A clip costs minutes (FastMetal) or money (Gemini), so raw clips are cached by what produced them.
+        key = "|".join([full_prompt, *made_by])
+        raw_path = os.path.join(self.cache_dir, f"{engine}_{hashlib.sha1(key.encode()).hexdigest()[:16]}.mp4")
         if not os.path.exists(raw_path):
-            if not FastMetalClient().generate(full_prompt, raw_path, duration, portrait=portrait):
+            if not client.generate(full_prompt, raw_path, duration, portrait=portrait):
                 return None
 
-        # The model tops out at ~5 s: longer scenes are slowed down to fill their duration.
+        # A scene longer than the model's longest clip (~5 s FastMetal, 15 s Gemini) is slowed down to fill it.
         # TODO: chain a second clip (or interpolate frames) if slow motion on 6s+ scenes looks choppy.
-        stretch = max(1.0, duration / (frames / FASTMETAL_FPS))
+        stretch = max(1.0, duration / clip_seconds)
         art_filter = style_config.get("ffmpeg_filter", "eq=contrast=1.05:saturation=1.05")
         fit_filter = (
             f"setpts={stretch:.4f}*PTS,"

@@ -15,6 +15,8 @@ const base: RenderRequest = {
   effects: "none",
   quality: "social",
   music: "none",
+  scriptEngine: "gemini",
+  ttsEngine: "edge",
   imageEngine: "pollinations",
   videoEngine: "fastmetal",
   progressBar: true,
@@ -33,6 +35,8 @@ test("arguments keep a leading dash inside the value", () => {
   const args = buildArgs({ ...base, topic: "--offline tricks" }, "output/x.mp4");
   expect(args).toContain("--topic=--offline tricks");
   expect(args).toContain("--video-engine=fastmetal");
+  expect(args).toContain("--script-engine=gemini");
+  expect(args).toContain("--tts-engine=edge");
   expect(args).not.toContain("--no-progress-bar");
   expect(buildArgs({ ...base, source: "preset", preset: "stoicism", progressBar: false }, "o.mp4")).toEqual(expect.arrayContaining(["--niche=stoicism", "--no-progress-bar"]));
 });

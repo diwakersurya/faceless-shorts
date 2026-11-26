@@ -22,6 +22,8 @@ Projects credited (all free / open source):
   https://github.com/yt-dlp/yt-dlp
 - Ollama — local LLM runtime for script writing
   https://github.com/ollama/ollama
+- Gemini API — Google's online models for scripts (free limits), images and video (paid)
+  https://ai.google.dev/gemini-api/docs
 - Pexels API — free stock video clips
   https://www.pexels.com/api/
 - Pixabay API — free stock video clips (fallback)
@@ -32,6 +34,7 @@ Author: su6osec (https://github.com/su6osec)
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import math
@@ -45,9 +48,15 @@ import sys
 import tempfile
 import time
 import uuid
+import wave
 from typing import Any, Dict, List, Optional, Tuple
 
-from faceless_shorts.config import MFLUX_MODELS
+from faceless_shorts.config import (
+    DEFAULT_GEMINI_VIDEO_RESOLUTION,
+    GEMINI_MODELS,
+    GEMINI_VIDEO_PRICE,
+    MFLUX_MODELS,
+)
 from urllib import error as urlerror
 from urllib.parse import urlencode
 from urllib import request as urlrequest
@@ -58,6 +67,7 @@ __all__ = [
     "ComfyUIClient",
     "FastMetalClient",
     "MfluxClient",
+    "GeminiClient",
     "YtDlpHelper",
     "LLMScriptWriter",
     "StockBRoll",
@@ -81,6 +91,11 @@ YTDLP_TIMEOUT = 300.0           # cap for a single yt-dlp download
 TRANSCRIBE_TIMEOUT = 600.0      # cap for an ffmpeg whisper transcription
 FASTMETAL_TIMEOUT = 1800.0      # cap for one FastMetal scene clip (text encode + denoise + decode)
 MFLUX_TIMEOUT = 900.0           # cap for one mflux image (the first one also downloads the model)
+GEMINI_TIMEOUTS = {"text": 120.0, "tts": 120.0, "transcribe": 120.0, "image": 180.0, "video": 900.0}  # cap for one Gemini request, by what it makes
+GEMINI_BUSY_WAIT = 5.0          # pause before asking again when Gemini answers "busy" (HTTP 503)
+GEMINI_TTS_RATE = 24000         # samples per second of the sound Gemini's speech models send
+GEMINI_MIN_SECONDS = 3          # shortest and longest clip Gemini Omni Flash generates
+GEMINI_MAX_SECONDS = 15
 
 DEFAULT_COMFY_URL = "http://127.0.0.1:8188"
 DEFAULT_FASTMETAL_HOME = "~/fastmetal-video"
@@ -91,13 +106,15 @@ FASTMETAL_FPS = 16              # native frame rate of the Wan 2.1 1.3B model
 FASTMETAL_MAX_FRAMES = 81       # longest validated clip (~5 s)
 FASTMETAL_MIN_FRAMES = 17
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta"  # GEMINI_API_URL replaces it
+GEMINI_API_REVISION = "2026-05-20"
 DEFAULT_CHECKPOINT = "v1-5-pruned-emaonly.safetensors"
 DEFAULT_NEGATIVE_PROMPT = "lowres, blurry, watermark, text"
 HF_WHISPER_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
 
 # Tool keys reported by doctor() / doctor_report().
-TOOL_KEYS: Tuple[str, ...] = ("whisper", "comfyui", "mflux", "fastmetal", "ytdlp", "llm", "stock")
+TOOL_KEYS: Tuple[str, ...] = ("whisper", "comfyui", "mflux", "fastmetal", "gemini", "ytdlp", "llm", "stock")
 
 # rich is an optional dependency; plain aligned text is the fallback.
 try:  # pragma: no cover - exercised implicitly when rich is installed
@@ -289,9 +306,11 @@ def save_user_settings(changes: Dict[str, Any]) -> Dict[str, Any]:
             settings[key] = value
     path = user_settings_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
+    # The file can hold an API key: only its owner may read it, from the moment it exists.
+    with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as handle:
         json.dump(settings, handle, indent=2)
         handle.write("\n")
+    os.chmod(path, 0o600)  # a file made before keys were kept here may be readable by others
     return settings
 
 
@@ -397,6 +416,19 @@ class ToolRegistry:
             ),
         }
 
+        # --- gemini: Google's online models ------------------------------------
+        gemini_problem = GeminiClient.problem()
+        report["gemini"] = {
+            "available": gemini_problem is None,
+            "version": GeminiClient.model("text") if gemini_problem is None else None,
+            "kind": "online script and voice (free limits), image and video (paid) models",
+            "install": "key from https://aistudio.google.com/apikey",
+            "hint": (
+                gemini_problem[1] if gemini_problem
+                else "--script-engine gemini | --tts-engine gemini | --engine gemini | --video-engine gemini"
+            ),
+        }
+
         # --- yt-dlp: media downloader ---------------------------------------
         ytdlp_version = YtDlpHelper.version()
         report["ytdlp"] = {
@@ -451,6 +483,7 @@ class ToolRegistry:
             "comfyui": ComfyUIClient().available,
             "mflux": MfluxClient.available,
             "fastmetal": FastMetalClient.available,
+            "gemini": GeminiClient.available,
             "ytdlp": YtDlpHelper.available,
             "llm": LLMScriptWriter.available,
             "stock": StockBRoll.available,
@@ -988,6 +1021,226 @@ class FastMetalClient:
             print(f"    [!] FastMetal failed: {lines[-1] if lines else 'no output'}")
             return None
         return output_path
+
+
+# --------------------------------------------------------------------------- #
+# Gemini (Google's online models: script text, images, video clips)
+# --------------------------------------------------------------------------- #
+class GeminiClient:
+    """Scripts, images and video clips from the Gemini API: one key, one endpoint (Interactions)."""
+
+    @staticmethod
+    def key_source() -> Optional[Tuple[str, str]]:
+        """The API key and where it comes from: the saved setting first, then the environment. None without a key."""
+        saved = str(load_user_settings().get("gemini_api_key") or "").strip()
+        if saved:
+            return saved, "settings"
+        for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+            if _env(name):
+                return _env(name), name
+        return None
+
+    @staticmethod
+    def base_url() -> str:
+        return (_env("GEMINI_API_URL") or GEMINI_API_URL).rstrip("/")
+
+    @staticmethod
+    def model(kind: str) -> str:
+        """Model id for "text", "image" or "video": GEMINI_<KIND>_MODEL when set, else the one in config."""
+        return _env(f"GEMINI_{kind.upper()}_MODEL") or str(GEMINI_MODELS[kind]["model"])
+
+    @classmethod
+    def problem(cls) -> Optional[Tuple[str, str]]:
+        """What is in the way, as (what, how to fix it). None when there is a key to send."""
+        if cls.key_source() is None:
+            return (
+                "Gemini API key",
+                "No Gemini API key is saved. Create one at https://aistudio.google.com/apikey, then save it "
+                "in the web app's Settings, or with: python -m faceless_shorts config --gemini-key -",
+            )
+        return None
+
+    @classmethod
+    def available(cls) -> bool:
+        """True when a key is saved or in the environment (whether Google accepts it is known only by asking)."""
+        return cls.problem() is None
+
+    @classmethod
+    def check_key(cls, key: str) -> Tuple[Optional[bool], str]:
+        """Ask Google whether *key* is accepted (a free request). (True/False, why); None when Google cannot be reached."""
+        result = _http_request(
+            f"{cls.base_url()}/models?pageSize=1", headers={"x-goog-api-key": key}, timeout=HTTP_SEARCH_TIMEOUT
+        )
+        if result is None:
+            return None, "Google could not be reached to check the key."
+        status, raw = result
+        if status == 200:
+            return True, "Google accepts the key."
+        return False, f"Google does not accept this key: {cls._error_message(status, raw)}"
+
+    @staticmethod
+    def _error_message(status: int, raw: bytes) -> str:
+        try:
+            return str(json.loads(raw.decode("utf-8", "replace"))["error"]["message"])
+        except Exception:
+            return f"HTTP {status}"
+
+    def _ask(
+        self,
+        kind: str,
+        model: str,
+        prompt: Any,
+        response_format: Optional[Dict[str, Any]] = None,
+        system: str = "",
+        generation_config: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """One request. Returns (what the model produced, HTTP status); says why and returns no parts on failure."""
+        source = self.key_source()
+        if source is None:
+            print(f"    [!] Gemini is not ready: {self.problem()[1]}")
+            return [], 0
+        body: Dict[str, Any] = {"model": model, "input": prompt}
+        if response_format:
+            body["response_format"] = response_format
+        if system:
+            body["system_instruction"] = system
+        if generation_config:
+            body["generation_config"] = generation_config
+        headers = {"x-goog-api-key": source[0], "Api-Revision": GEMINI_API_REVISION}
+        for attempt in (1, 2):
+            result = _http_request(
+                f"{self.base_url()}/interactions", data=body, headers=headers, timeout=GEMINI_TIMEOUTS[kind]
+            )
+            if result is None:
+                print("    [!] Gemini did not answer (no connection, or it took too long).")
+                return [], 0
+            status, raw = result
+            if status != 503 or attempt == 2:
+                break
+            time.sleep(GEMINI_BUSY_WAIT)  # "experiencing high demand": usually over in seconds
+        if status == 503:
+            print(f"    [!] Gemini ({model}) is busy right now.")
+            return [], status
+        if status != 200:
+            message = self._error_message(status, raw)
+            # Google's free limits give the image and video models an allowance of zero.
+            hint = " Images and video need a key with billing set up (README: Online Mode with Gemini)." if "limit: 0" in message else ""
+            print(f"    [!] Gemini ({model}) refused: {message}{hint}")
+            return [], status
+        try:
+            steps = json.loads(raw.decode("utf-8", "replace")).get("steps") or []
+        except ValueError:
+            steps = []
+        parts = [part for step in steps if step.get("type") == "model_output" for part in step.get("content") or []]
+        if not parts:
+            print(f"    [!] Gemini ({model}) answered with nothing usable.")
+        return parts, status
+
+    def write_json(self, prompt: str, system: str = "") -> Optional[Dict[str, Any]]:
+        """Ask the text model for a JSON object. The fallback model is asked when the first one is busy."""
+        models = [self.model("text")]
+        if GEMINI_MODELS["text"]["fallback"] not in models:
+            models.append(str(GEMINI_MODELS["text"]["fallback"]))
+        for model in models:
+            if model != models[0]:
+                print(f"    → Asking {model} instead.")
+            parts, status = self._ask("text", model, prompt, system=system)
+            if parts:
+                return _extract_json("".join(str(part.get("text") or "") for part in parts if part.get("type") == "text"))
+            if status != 503:
+                break
+        return None
+
+    def _media(
+        self, kind: str, prompt: str, response_format: Dict[str, Any], generation_config: Optional[Dict[str, Any]] = None
+    ) -> Optional[bytes]:
+        made = "audio" if kind == "tts" else kind  # what the API calls the thing this kind of model makes
+        parts, _ = self._ask(
+            kind, self.model(kind), prompt,
+            response_format={"type": made, **response_format}, generation_config=generation_config,
+        )
+        data = next((part.get("data") for part in parts if part.get("type") == made and part.get("data")), None)
+        if parts and not data:
+            print(f"    [!] Gemini answered without any {made}.")
+        try:
+            return base64.b64decode(data) if data else None
+        except ValueError:
+            return None
+
+    def speak(self, text: str, voice: str) -> Optional[bytes]:
+        """Speak *text* in one of Gemini's voices. Returns the sound as raw samples
+        (GEMINI_TTS_RATE per second, one channel, 16-bit), or None on any failure."""
+        data = self._media("tts", text, {}, generation_config={"speech_config": [{"voice": voice}]})
+        if not data:
+            return None
+        try:
+            with wave.open(io.BytesIO(data)) as sound:
+                if (sound.getframerate(), sound.getnchannels(), sound.getsampwidth()) != (GEMINI_TTS_RATE, 1, 2):
+                    print("    [!] Gemini sent sound in a format this tool does not expect.")
+                    return None
+                return sound.readframes(sound.getnframes())
+        except (wave.Error, EOFError) as exc:
+            print(f"    [!] The sound Gemini sent could not be read ({exc}).")
+            return None
+
+    def word_times(self, wav: bytes) -> List[Tuple[str, float, float]]:
+        """When each word in a WAV recording is spoken, as (word, start, end) in seconds. Empty on any failure."""
+        parts, _ = self._ask(
+            "transcribe", self.model("transcribe"),
+            [{"type": "audio", "data": base64.b64encode(wav).decode("ascii"), "mime_type": "audio/wav"}],
+            generation_config={"transcription_config": {"mode": {"type": "verbatim", "timestamp_granularities": ["word"]}}},
+        )
+        try:
+            return [
+                (str(note["text"]), float(note["start_offset"].rstrip("s")), float(note["end_offset"].rstrip("s")))
+                for part in parts for note in part.get("annotations") or [] if note.get("type") == "word_info"
+            ]
+        except (KeyError, ValueError, AttributeError):
+            return []
+
+    def generate_image(self, prompt: str, output_path: str, portrait: bool = True) -> Optional[str]:
+        """Generate one image into *output_path* (any format Pillow writes). None on any failure."""
+        data = self._media("image", prompt, {"aspect_ratio": "9:16" if portrait else "16:9", "image_size": "1K"})
+        if not data:
+            return None
+        try:
+            from PIL import Image
+
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            with Image.open(io.BytesIO(data)) as image:
+                image.convert("RGB").save(output_path, quality=95)
+            return output_path
+        except Exception as exc:
+            print(f"    [!] The image Gemini sent could not be saved ({exc}).")
+            return None
+
+    @staticmethod
+    def seconds_for(duration: float) -> int:
+        """Whole seconds to ask for so the clip covers *duration*: the model makes 3 to 15."""
+        return min(GEMINI_MAX_SECONDS, max(GEMINI_MIN_SECONDS, math.ceil(max(duration, 0.0))))
+
+    @staticmethod
+    def video_resolution() -> str:
+        chosen = _env("GEMINI_VIDEO_RESOLUTION")
+        return chosen if chosen in GEMINI_VIDEO_PRICE else DEFAULT_GEMINI_VIDEO_RESOLUTION
+
+    def generate(self, prompt: str, output_path: str, duration: float, portrait: bool = True) -> Optional[str]:
+        """Generate one clip (same call as FastMetalClient.generate) covering *duration* seconds (at most 15) into *output_path*. None on any failure."""
+        data = self._media("video", prompt, {
+            "aspect_ratio": "9:16" if portrait else "16:9",
+            "duration": f"{self.seconds_for(duration)}s",
+            "resolution": self.video_resolution(),
+        })
+        if not data:
+            return None
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            with open(output_path, "wb") as handle:
+                handle.write(data)
+            return output_path
+        except OSError as exc:
+            print(f"    [!] The clip Gemini sent could not be saved ({exc}).")
+            return None
 
 
 # --------------------------------------------------------------------------- #

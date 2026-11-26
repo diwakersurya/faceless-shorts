@@ -3,6 +3,7 @@ import type { Progress } from "../render";
 import type { RenderRequest, Settings } from "../shared/schema";
 
 export type Choice = { value: string; label: string; description?: string | null };
+export type Engine = Choice & { available: boolean };
 /** Every list the form offers. The Python tool owns them; nothing here is hardcoded in the page. */
 export type Options = {
   presets: (Choice & { scenes: number })[];
@@ -14,9 +15,13 @@ export type Options = {
   effects: Choice[];
   qualities: Choice[];
   music: string[];
-  /** available: false when the engine needs something installed or running; its description then says what. */
-  imageEngines: (Choice & { available: boolean })[];
-  videoEngines: Choice[];
+  /** available: false when the engine needs something installed, running or saved; its description then says what. */
+  scriptEngines: Engine[];
+  ttsEngines: Engine[];
+  imageEngines: Engine[];
+  videoEngines: Engine[];
+  /** Whether a Gemini API key is there, where it comes from ("settings" or the name of an environment variable) and its last 4 characters. Never the key. voices: the voices Gemini speaks in (its own, the same for every language). */
+  gemini: { configured: boolean; source: string | null; ending: string | null; voices: Choice[]; defaultVoice: string };
   /** The local video model: whether it is ready, where it was looked for, what was not there and the command that fixes it. */
   fastmetal: { available: boolean; home: string; missing: string | null; fix: string | null; configured: string };
   defaults: Omit<RenderRequest, "source" | "topic" | "preset" | "progressBar">;

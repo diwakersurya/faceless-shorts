@@ -36,10 +36,14 @@ from faceless_shorts.config import (
     DEFAULT_IMAGE_ENGINE,
     VIDEO_ENGINES,
     DEFAULT_VIDEO_ENGINE,
+    TTS_ENGINES,
+    DEFAULT_TTS_ENGINE,
+    GEMINI_VIDEO_PRICE,
+    SCENE_MOTIONS,
 )
 from faceless_shorts import stickman
 from faceless_shorts.script_generator import VideoScript
-from faceless_shorts.tts_engine import TTSEngine, WordTimestamp
+from faceless_shorts.tts_engine import GeminiTTS, TTSEngine, WordTimestamp
 from faceless_shorts.visuals import VisualManager
 from faceless_shorts.subtitles import SubtitleGenerator
 from faceless_shorts.audio import SoundEngine
@@ -66,6 +70,7 @@ class VideoRenderer:
         crf: Optional[int] = None,
         encoder_preset: Optional[str] = None,
         video_engine: str = DEFAULT_VIDEO_ENGINE,
+        tts_engine: str = DEFAULT_TTS_ENGINE,
     ):
         self.language = (language or DEFAULT_LANGUAGE).lower()
 
@@ -87,6 +92,7 @@ class VideoRenderer:
         self.work_dir = work_dir
         self.engine = engine or DEFAULT_IMAGE_ENGINE
         self.video_engine = video_engine if video_engine in VIDEO_ENGINES else DEFAULT_VIDEO_ENGINE
+        self.tts_engine = tts_engine if tts_engine in TTS_ENGINES else DEFAULT_TTS_ENGINE
 
         # Quality profile: fps / CRF / x264 preset / audio bitrate / canvas size
         profile = QUALITY_PROFILES.get(quality, QUALITY_PROFILES[DEFAULT_QUALITY])
@@ -295,12 +301,22 @@ class VideoRenderer:
         full_text = " ".join(scene.text for scene in script.scenes)
         master_voice_path = os.path.join(self.work_dir, "master_voice.mp3")
 
-        audio_res = self.tts.synthesize(
-            text=full_text,
-            output_path=master_voice_path,
-            voice=self.voice,
-            rate=self.speech_rate
-        )
+        audio_res = None
+        edge_voice = self.voice
+        if self.tts_engine == "gemini":
+            audio_res = GeminiTTS(self.voice).synthesize(full_text, os.path.join(self.work_dir, "master_voice.wav"))
+            if audio_res is None:
+                # self.voice names a Gemini voice here, so Edge-TTS takes the usual voice of the language.
+                edge_voice = LANGUAGES.get(self.language, LANGUAGES[DEFAULT_LANGUAGE])["default_voice"]
+                print(f"    [!] Gemini did not make the voice-over; Edge-TTS ({edge_voice}) speaks it instead.")
+        if audio_res is None:
+            audio_res = self.tts.synthesize(
+                text=full_text,
+                output_path=master_voice_path,
+                voice=edge_voice,
+                rate=self.speech_rate
+            )
+        master_voice_path = audio_res.audio_path
 
         all_words = audio_res.words
         total_duration = audio_res.duration_sec
@@ -321,11 +337,7 @@ class VideoRenderer:
         )
 
         # Rotating motion patterns so camera is constantly dynamic and engaging
-        motion_rotation = [
-            "punch_zoom_in", "dramatic_zoom_out", "pan_left", "whip_zoom",
-            "pan_right", "vertigo_shake", "rise_up", "orbit_sway",
-            "shockwave_out", "pulse_heartbeat",
-        ]
+        motion_rotation = SCENE_MOTIONS
 
         def clip_duration(i: int) -> float:
             # When xfade is used, non-final clips have extra duration to provide overlap
@@ -333,10 +345,18 @@ class VideoRenderer:
             return dur + trans_dur if (use_xfade and i < n_scenes - 1) else dur
 
         # ------------------------------------------- optional AI video scene clips
-        # Real motion from the local video model instead of effects on a still image.
-        # A scene whose clip fails falls through to the image + Ken Burns path below.
+        # Real motion from a video model (local FastMetal or online Gemini) instead of effects
+        # on a still image. A scene whose clip fails falls through to the image + Ken Burns path below.
         ai_video_clips: Dict[int, str] = {}
         if self.video_engine != "none":
+            if self.video_engine == "gemini":
+                # Paid by the second: say what the clips come to before any is asked for.
+                from faceless_shorts.integrations import GeminiClient
+                seconds = sum(GeminiClient.seconds_for(clip_duration(i)) for i in range(n_scenes))
+                resolution = GeminiClient.video_resolution()
+                print(f"    → Gemini video: {n_scenes} clips, {seconds} s at {resolution}, about "
+                      f"${seconds * GEMINI_VIDEO_PRICE[resolution]:.2f} at list price "
+                      f"(clips made before are reused, not paid for again).")
             for i, scene in enumerate(script.scenes):
                 clip_path = os.path.join(self.work_dir, f"clip_scene_{i+1:02d}.mp4")
                 if self.video_engine == "stickman":
@@ -359,6 +379,7 @@ class VideoRenderer:
                     fps=self.fps,
                     width=self.width,
                     height=self.height,
+                    engine=self.video_engine,
                 ):
                     ai_video_clips[i] = clip_path
                 else:
