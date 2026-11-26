@@ -142,7 +142,7 @@ function Form({ options, busy, onSettings }: Props) {
             />
             <Selector
               label="Video"
-              description="A video model makes a real-motion clip for each scene, instead of camera moves on its image."
+              description="A real-motion clip for each scene, instead of camera moves on its image: stick figures drawn by code, or a video model."
               options={engineChoices(options.videoEngines)}
               value={form.videoEngine}
               onChange={set("videoEngine")}
