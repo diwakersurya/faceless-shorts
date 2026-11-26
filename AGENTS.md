@@ -33,6 +33,9 @@ python -m faceless_shorts generate --script-json presets/stoicism.json --output 
 # Real-motion AI clip per scene with a local model (Apple Silicon, minutes per scene; see README)
 python -m faceless_shorts generate --niche stoicism --video-engine fastmetal
 
+# Stick-figure scenes drawn by code (instant, offline; a scene's "stick" storyboard in the script JSON says what to draw)
+python -m faceless_shorts generate --niche stoicism --video-engine stickman
+
 # Web app (React + Astryx) at http://127.0.0.1:4780 (add --tailnet to reach it from a phone over Tailscale)
 cd ui && bun install && bun run serve
 

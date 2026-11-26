@@ -276,6 +276,37 @@ Use either local images or AI video scenes for a short, not both at once: `--vid
 
 ---
 
+## ✏️ Stick-Figure Scenes Drawn by Code (`--video-engine stickman`)
+
+Every scene becomes a short animated clip of stick figures on a paper background, drawn with Pillow and encoded by FFmpeg. There is no model and no network call, so a 30-second short renders in about 20 seconds, costs nothing and works offline.
+
+```bash
+python -m faceless_shorts generate --niche stoicism --video-engine stickman
+python -m faceless_shorts generate --topic "why foxes hunt at dawn" --video-engine stickman
+```
+
+What a scene shows comes from an optional `stick` storyboard on the scene in the script JSON (`presets/stoicism.json` has one for every scene):
+
+```json
+{
+  "index": 1,
+  "text": "Whenever you are offended by someone's lack of respect, ask yourself this one question.",
+  "visual_prompt": "...",
+  "stick": { "action": "think", "other": "angry", "bubble": "?", "other_bubble": "!!", "headline": "Ask one question" }
+}
+```
+
+| Key | What it does |
+| :--- | :--- |
+| `action` | What the main figure does: `stand`, `talk`, `point`, `angry`, `think`, `shrug`, `celebrate`, `slump`, `recoil`, `wave`, `walk`, `run`, `lift`, `meditate` |
+| `other` | Adds a second figure with its own action. It acts first, then the main figure reacts |
+| `bubble`, `other_bubble` | A few characters in that figure's bubble (a thought bubble for `think` and `meditate`) |
+| `headline` | Up to six words that pop in along the top |
+
+A scene without a storyboard gets its action from keywords in its text (*gym* lifts, *money* celebrates, a question thinks), and otherwise the actions rotate from scene to scene. The figure walks in on the first scene. Captions move under the ground line. The art style is not applied to these scenes; the colour grade, transitions and VFX still are. Headlines and bubbles use a Latin font.
+
+---
+
 ## 🎞️ Real-Motion Scenes with a Local Video Model (`--video-engine fastmetal`)
 
 By default every scene is a still image with Ken Burns camera motion. With `--video-engine fastmetal` each scene is generated as a real video clip by [FastMetal 1.3B](https://huggingface.co/FastVideo/FastMetal-1.3B-QAD), which runs on your own Mac: free, private, no API key. The flag is optional. Without it, or on a computer that cannot run the model, shorts are made exactly as before.

@@ -37,6 +37,7 @@ from faceless_shorts.config import (
     VIDEO_ENGINES,
     DEFAULT_VIDEO_ENGINE,
 )
+from faceless_shorts import stickman
 from faceless_shorts.script_generator import VideoScript
 from faceless_shorts.tts_engine import TTSEngine, WordTimestamp
 from faceless_shorts.visuals import VisualManager
@@ -130,6 +131,9 @@ class VideoRenderer:
             width=self.width,
             height=self.height,
         )
+        if self.video_engine == "stickman":
+            # Captions go under the ground line the figures stand on, not across their legs.
+            self.subtitles.style_config["margin_v"] = int(stickman.CAPTION_MARGIN_V * self.height / stickman.H)
         self.audio = SoundEngine()
         self.vfx_mgr = VFXManager(work_dir=work_dir)
         self.ffmpeg_bin, self.has_ass_filter = self._find_ffmpeg()
@@ -335,6 +339,17 @@ class VideoRenderer:
         if self.video_engine != "none":
             for i, scene in enumerate(script.scenes):
                 clip_path = os.path.join(self.work_dir, f"clip_scene_{i+1:02d}.mp4")
+                if self.video_engine == "stickman":
+                    # Drawn by code from the scene's storyboard (or its text): no model, a few seconds.
+                    print(f"    → Scene {i+1}/{n_scenes}: Generating stickman clip ({clip_duration(i):.2f}s)...")
+                    if stickman.render_clip(
+                        scene.text, clip_path, clip_duration(i), self.fps, self.width, self.height,
+                        storyboard=scene.stick, index=i,
+                    ):
+                        ai_video_clips[i] = clip_path
+                    else:
+                        print(f"    [!] Scene {i+1}: stickman clip unavailable, using image + Ken Burns instead.")
+                    continue
                 print(f"    → Scene {i+1}/{n_scenes}: Generating {self.video_engine} video clip "
                       f"({clip_duration(i):.2f}s, takes a few minutes)...")
                 if self.visuals.render_ai_video_clip(

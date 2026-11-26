@@ -17,6 +17,8 @@ class Scene:
     visual_prompt: str
     motion: str = "punch_zoom_in"
     duration_estimate: float = 5.0
+    # What --video-engine stickman draws for this scene (see stickman.py); None picks it from the text.
+    stick: Optional[Dict] = None
 
 @dataclass
 class VideoScript:
@@ -153,31 +155,36 @@ VIRAL_TEMPLATES = {
                 index=1,
                 text="Whenever you are offended by someone's lack of respect, ask yourself this one question.",
                 visual_prompt="majestic roman emperor marcus aurelius marble bust, cinematic moody lighting, ancient pillars and storm clouds",
-                motion="punch_zoom_in"
+                motion="punch_zoom_in",
+                stick={"action": "think", "other": "angry", "bubble": "?", "other_bubble": "!!", "headline": "Ask one question"}
             ),
             Scene(
                 index=2,
                 text="Is it possible for shameless people not to exist in this world? Absolutely not.",
                 visual_prompt="ancient roman colosseum during turbulent thunderstorm, dramatic cinematic lighting",
-                motion="dramatic_zoom_out"
+                motion="dramatic_zoom_out",
+                stick={"action": "shrug", "bubble": "NO", "headline": "They always exist"}
             ),
             Scene(
                 index=3,
                 text="So why do you expect the impossible? You have encountered one of those inevitable fools.",
                 visual_prompt="lone stoic warrior standing on a mountain cliff, violent wind, calm face, dramatic sunset lighting",
-                motion="pan_left"
+                motion="pan_left",
+                stick={"action": "point", "other": "shrug", "headline": "Expect it"}
             ),
             Scene(
                 index=4,
                 text="You cannot control the storm outside, but you have absolute power over your inner stillness.",
                 visual_prompt="calm glowing bonsai tree inside a raging glass sphere amidst tempest, surreal hyperrealistic lighting",
-                motion="pan_right"
+                motion="pan_right",
+                stick={"action": "meditate", "other": "angry", "other_bubble": "!!", "headline": "Inner stillness"}
             ),
             Scene(
                 index=5,
                 text="Do not hand over the steering wheel of your emotions to people who cannot even control themselves.",
                 visual_prompt="bronze ancient compass resting on old leather map, golden warm cinematic glow, macro shot",
-                motion="punch_zoom_in"
+                motion="punch_zoom_in",
+                stick={"action": "point", "other": "slump", "bubble": "!", "headline": "Keep your wheel"}
             )
         ],
         cta="Subscribe to master your mind.",
