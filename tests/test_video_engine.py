@@ -69,12 +69,14 @@ class TestVideoEngine(unittest.TestCase):
         from faceless_shorts.cli import run_config
 
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.dict(os.environ, {"FACELESS_SETTINGS_FILE": os.path.join(tmp, "settings.json")}):
-                args = mock.Mock(fastmetal_home=os.path.join(tmp, "nowhere"))
+            # No Gemini key here, so the command has nothing to ask Google about.
+            env = {"FACELESS_SETTINGS_FILE": os.path.join(tmp, "settings.json"), "GEMINI_API_KEY": "", "GOOGLE_API_KEY": ""}
+            with mock.patch.dict(os.environ, env):
+                args = mock.Mock(fastmetal_home=os.path.join(tmp, "nowhere"), gemini_key=None)
                 with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                     run_config(args)
                 self.assertEqual(load_user_settings(), {})
-                args = mock.Mock(fastmetal_home=tmp)
+                args = mock.Mock(fastmetal_home=tmp, gemini_key=None)
                 with contextlib.redirect_stdout(io.StringIO()) as out:
                     run_config(args)
                 self.assertEqual(load_user_settings(), {"fastmetal_home": tmp})
@@ -97,7 +99,7 @@ class TestVideoEngine(unittest.TestCase):
         lists = {
             "language": "languages", "voice": "voices", "subtitleStyle": "subtitleStyles", "artStyle": "artStyles",
             "transition": "transitions", "effects": "effects", "quality": "qualities",
-            "imageEngine": "imageEngines", "videoEngine": "videoEngines",
+            "scriptEngine": "scriptEngines", "ttsEngine": "ttsEngines", "imageEngine": "imageEngines", "videoEngine": "videoEngines",
         }
         for field, name in lists.items():
             self.assertIn(options["defaults"][field], [c["value"] for c in options[name]], field)

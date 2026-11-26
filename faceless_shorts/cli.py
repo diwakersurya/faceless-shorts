@@ -28,6 +28,12 @@ from faceless_shorts.config import (
     MFLUX_MODELS,
     VIDEO_ENGINES,
     DEFAULT_VIDEO_ENGINE,
+    SCRIPT_ENGINES,
+    DEFAULT_SCRIPT_ENGINE,
+    TTS_ENGINES,
+    DEFAULT_TTS_ENGINE,
+    GEMINI_VOICES,
+    DEFAULT_GEMINI_VOICE,
 )
 from faceless_shorts.postfx import PostFX
 from faceless_shorts.vfx import VFX_PRESETS
@@ -281,14 +287,18 @@ def run_generate(args):
         script = create_or_get_script(args.niche, language=lang)
     elif args.topic:
         console.print(f"[cyan]Dynamically building script for custom topic: '{args.topic}' (language={lang})...[/cyan]")
-        script = create_or_get_script(args.topic, language=lang)
+        script = create_or_get_script(args.topic, language=lang, script_engine=args.script_engine)
     else:
         console.print(f"[cyan]No topic/niche specified. Defaulting to 'dark_psychology' (language={lang})...[/cyan]")
         script = create_or_get_script("dark_psychology", language=lang)
 
     # Resolve voice if user left it as default 'christopher' but specified another language
     chosen_voice = args.voice
-    if chosen_voice == "christopher" and lang != "en" and lang in LANGUAGES:
+    if args.tts_engine == "gemini":
+        # Gemini has its own voices, and each speaks every language: any other name means its default voice.
+        from faceless_shorts.tts_engine import resolve_gemini_voice
+        chosen_voice = resolve_gemini_voice(chosen_voice)
+    elif chosen_voice == "christopher" and lang != "en" and lang in LANGUAGES:
         chosen_voice = LANGUAGES[lang]["default_voice"]
 
     # Optional: Save preset to presets/ folder
@@ -309,7 +319,7 @@ def run_generate(args):
         f"[bold white]Niche:[/bold white] {script.niche}\n"
         f"[bold white]Scenes:[/bold white] {len(script.scenes)}\n"
         f"[bold white]Opening Hook:[/bold white] [yellow]\"{script.hook}\"[/yellow]\n"
-        f"[bold white]Voice:[/bold white] {chosen_voice}\n"
+        f"[bold white]Voice:[/bold white] {chosen_voice} ({TTS_ENGINES.get(args.tts_engine, args.tts_engine)})\n"
         f"[bold white]Scene Transition:[/bold white] [yellow]{trans_name}[/yellow]\n"
         f"[bold white]Retention Progress Bar:[/bold white] [cyan]{progress_bar_state}[/cyan]\n"
         f"[bold white]Subtitle Style:[/bold white] {args.style}\n"
@@ -317,6 +327,7 @@ def run_generate(args):
         f"[bold white]Post-FX Grade:[/bold white] [magenta]{effects_display}[/magenta]\n"
         f"[bold white]VFX & Animations:[/bold white] [yellow]{args.vfx or 'none'}[/yellow]\n"
         f"[bold white]Quality:[/bold white] [green]{args.quality} ({profile['width']}x{profile['height']} @ {args.fps or profile['fps']}fps, crf {profile['crf']})[/green]\n"
+        f"[bold white]Script Writer:[/bold white] {'Ready-made script' if not args.topic or args.niche or args.script_json else SCRIPT_ENGINES.get(args.script_engine, args.script_engine)}\n"
         f"[bold white]Image Engine:[/bold white] {'Procedural (offline)' if args.offline else IMAGE_ENGINES.get(args.engine, args.engine)}\n"
         f"[bold white]Scene Video:[/bold white] {VIDEO_ENGINES.get(args.video_engine, args.video_engine)}\n"
         f"[bold white]Audio:[/bold white] {'Clean Studio Voice (Zero Background Sound)' if (not args.music or args.music == 'none') else f'{args.music} (Ducked, -14 LUFS)'}",
@@ -344,6 +355,7 @@ def run_generate(args):
         crf=args.crf,
         encoder_preset=args.encoder_preset,
         video_engine=args.video_engine,
+        tts_engine=args.tts_engine,
     )
 
     rendered_file = renderer.render(
@@ -373,12 +385,32 @@ def run_generate(args):
 
 def print_options():
     """Print every choice the generate command accepts as JSON (read by the web UI)."""
-    from faceless_shorts.integrations import ComfyUIClient, FastMetalClient, MfluxClient, load_user_settings
+    from faceless_shorts.integrations import ComfyUIClient, FastMetalClient, GeminiClient, MfluxClient, load_user_settings
 
     fastmetal_problem = FastMetalClient().problem()
     # Engines that need something installed or running on this computer: what is in the way, if anything.
     engine_fixes = {key: (MfluxClient(key).problem() or (None, None))[1] for key in MFLUX_MODELS}
     engine_fixes["comfyui"] = None if ComfyUIClient.available() else "ComfyUI is not running. Start it on port 8188, or set FACELESS_COMFY_URL."
+    gemini_key = GeminiClient.key_source()
+    # Short, for a list on a page; the command line gets the full steps from GeminiClient.problem().
+    engine_fixes["gemini"] = None if gemini_key else "Needs a Gemini API key. Add one in Settings, or with: config --gemini-key -"
+    video_fixes = {
+        "fastmetal": f"{fastmetal_problem[0]} does not exist. {fastmetal_problem[1]}" if fastmetal_problem else None,
+        "gemini": engine_fixes["gemini"],
+    }
+
+    def choices(engines, fixes):
+        # "Name (what it is)" becomes a short label and a description, so four lists fit side by side on a page.
+        # An engine that cannot run here stays in the list: its description then says what it needs.
+        def one(key, text):
+            name, _, about = text.partition(" (")
+            return {
+                "value": key,
+                "label": name,
+                "description": fixes.get(key) or about.rstrip(")") or None,
+                "available": fixes.get(key) is None,
+            }
+        return [one(key, text) for key, text in engines.items()]
     options = {
         "presets": [{"value": key, "label": t.title, "scenes": len(t.scenes)} for key, t in VIRAL_TEMPLATES.items()],
         "languages": [
@@ -404,16 +436,18 @@ def print_options():
             for key, q in QUALITY_PROFILES.items()
         ],
         "music": ["none", "dark_tension", "curiosity_ambient", "cinematic_pulse", "sub_bass_808"],
-        "imageEngines": [
-            {
-                "value": key,
-                "label": label,
-                "description": engine_fixes.get(key),
-                "available": engine_fixes.get(key) is None,
-            }
-            for key, label in IMAGE_ENGINES.items()
-        ],
-        "videoEngines": [{"value": key, "label": label} for key, label in VIDEO_ENGINES.items()],
+        "scriptEngines": choices(SCRIPT_ENGINES, engine_fixes),
+        "ttsEngines": choices(TTS_ENGINES, engine_fixes),
+        "imageEngines": choices(IMAGE_ENGINES, engine_fixes),
+        "videoEngines": choices(VIDEO_ENGINES, video_fixes),
+        # The key itself never leaves this computer's settings: only whether there is one, where from, and its last 4 characters.
+        "gemini": {
+            "configured": gemini_key is not None,
+            "source": gemini_key[1] if gemini_key else None,
+            "ending": gemini_key[0][-4:] if gemini_key else None,
+            "voices": [{"value": name, "label": name, "description": tone} for name, tone in GEMINI_VOICES.items()],
+            "defaultVoice": DEFAULT_GEMINI_VOICE,
+        },
         "fastmetal": {
             "available": fastmetal_problem is None,
             "home": FastMetalClient().home,
@@ -431,6 +465,8 @@ def print_options():
             "effects": "none",
             "quality": DEFAULT_QUALITY,
             "music": "none",
+            "scriptEngine": DEFAULT_SCRIPT_ENGINE,
+            "ttsEngine": DEFAULT_TTS_ENGINE,
             "imageEngine": DEFAULT_IMAGE_ENGINE,
             "videoEngine": DEFAULT_VIDEO_ENGINE,
         },
@@ -440,14 +476,31 @@ def print_options():
 
 def run_config(args):
     """Show the settings kept for this computer, or change one."""
-    from faceless_shorts.integrations import FastMetalClient, load_user_settings, save_user_settings, user_settings_path
+    from faceless_shorts.integrations import (
+        FastMetalClient, GeminiClient, load_user_settings, save_user_settings, user_settings_path,
+    )
 
+    # Everything asked for is checked first: nothing is saved when one part of it is refused.
+    changes = {}
     if args.fastmetal_home is not None:
         folder = args.fastmetal_home.strip()
         if folder and not os.path.isdir(os.path.expanduser(folder)):
             print(f"There is no folder at {folder}", file=sys.stderr)
             sys.exit(2)
-        save_user_settings({"fastmetal_home": folder})
+        changes["fastmetal_home"] = folder
+    if args.gemini_key is not None:
+        # "-" reads the key from standard input, which keeps it out of the shell history and the process list.
+        key = (sys.stdin.readline() if args.gemini_key == "-" else args.gemini_key).strip()
+        if key:
+            accepted, why = GeminiClient.check_key(key)
+            if accepted is False:
+                print(why, file=sys.stderr)
+                sys.exit(2)
+            if accepted is None:
+                print(f"{why} The key is saved without being checked.")
+        changes["gemini_api_key"] = key
+    if changes:
+        save_user_settings(changes)
 
     saved = load_user_settings().get("fastmetal_home")
     print(f"Settings file: {user_settings_path()}")
@@ -456,6 +509,13 @@ def run_config(args):
         print("  FACELESS_FASTMETAL_HOME is set in this shell and takes precedence over the saved folder.")
     problem = FastMetalClient().problem()
     print("FastMetal: ready" if problem is None else f"FastMetal: not ready. {problem[0]} does not exist. {problem[1]}")
+    gemini = GeminiClient.key_source()
+    if gemini is None:
+        print(f"Gemini: no key. {GeminiClient.problem()[1]}")
+    else:
+        where = "saved in the settings file" if gemini[1] == "settings" else f"from {gemini[1]} in this shell"
+        print(f"Gemini: key ending in {gemini[0][-4:]}, {where}. {GeminiClient.check_key(gemini[0])[1]}")
+        print("  Scripts and the voice-over work within Google's free limits; images and video need billing set up on the key.")
 
 
 def run_doctor():
@@ -572,8 +632,10 @@ def main():
     gen_parser.add_argument("--fps", type=int, default=None, help="Override output frame rate (24/30/60)")
     gen_parser.add_argument("--crf", type=int, default=None, help="Override x264 CRF quality (lower = better, 15-28)")
     gen_parser.add_argument("--encoder-preset", type=str, default=None, choices=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"], help="Override x264 encoder speed/quality preset")
-    gen_parser.add_argument("--engine", type=str, default=DEFAULT_IMAGE_ENGINE, choices=list(IMAGE_ENGINES.keys()), help="Image generation engine: pollinations, comfyui, a local model (flux2-klein, z-image-turbo) or procedural")
-    gen_parser.add_argument("--video-engine", type=str, default=DEFAULT_VIDEO_ENGINE, choices=list(VIDEO_ENGINES.keys()), help="Scene video engine: 'fastmetal' generates a real-motion AI clip per scene with a local model (Apple Silicon, minutes per scene) instead of Ken Burns motion on a still image")
+    gen_parser.add_argument("--script-engine", type=str, default=DEFAULT_SCRIPT_ENGINE, choices=list(SCRIPT_ENGINES.keys()), help="Who writes the script for a --topic: 'gemini' asks Google's Gemini (online, needs a key: see 'config --gemini-key'); 'auto' is the built-in writer")
+    gen_parser.add_argument("--tts-engine", type=str, default=DEFAULT_TTS_ENGINE, choices=list(TTS_ENGINES.keys()), help="Who speaks the voice-over: 'edge' is Microsoft Edge-TTS (free, no key); 'gemini' is Google's speech model (online, needs a key). With gemini, --voice takes a Gemini voice such as Charon, Kore or Puck")
+    gen_parser.add_argument("--engine", type=str, default=DEFAULT_IMAGE_ENGINE, choices=list(IMAGE_ENGINES.keys()), help="Image generation engine: pollinations, comfyui, a local model (flux2-klein, z-image-turbo), gemini (online, paid per image) or procedural")
+    gen_parser.add_argument("--video-engine", type=str, default=DEFAULT_VIDEO_ENGINE, choices=list(VIDEO_ENGINES.keys()), help="Scene video engine: a real-motion AI clip per scene instead of Ken Burns motion on a still image. 'fastmetal' is a local model (Apple Silicon, minutes per scene); 'gemini' is Google's online model (paid per second of video)")
     gen_parser.add_argument("-o", "--output", type=str, help="Output MP4 file path")
     gen_parser.add_argument("--script-json", type=str, help="Path to custom JSON script file")
     gen_parser.add_argument("--images-dir", type=str, help="Path to folder containing scene_01.jpg, scene_02.jpg, etc.")
@@ -595,7 +657,8 @@ def main():
     subparsers.add_parser("prompt", help="Print LLM system prompt for Claude/Gemini/OpenCode")
     subparsers.add_parser("doctor", help="Diagnose free tool integrations (ffmpeg, whisper, comfyui, yt-dlp, ollama, ...)")
     subparsers.add_parser("options", help="Print every generate choice as JSON (used by the web UI)")
-    cfg_parser = subparsers.add_parser("config", help="Show or change the settings kept for this computer (where FastMetal is installed)")
+    cfg_parser = subparsers.add_parser("config", help="Show or change the settings kept for this computer (where FastMetal is installed, the Gemini API key)")
+    cfg_parser.add_argument("--gemini-key", type=str, default=None, help="Gemini API key from aistudio.google.com/apikey. Pass - to type or pipe it in instead of putting it on the command line; an empty string forgets it")
     cfg_parser.add_argument("--fastmetal-home", type=str, default=None, help="Folder that holds FastVideo/ and FastMetal-1.3B-QAD/ (pass an empty string to forget it)")
 
     # transcribe command (local Whisper via FFmpeg)

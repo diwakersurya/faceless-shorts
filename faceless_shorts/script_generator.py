@@ -709,6 +709,14 @@ def _llm_lookup(topic: str, language: str) -> Optional[VideoScript]:
             language=language,
             system_prompt=LLM_SYSTEM_PROMPT,
         )
+        return _script_from_data(data, topic)
+    except Exception:
+        return None
+
+def _script_from_data(data: Optional[Dict], topic: str) -> Optional[VideoScript]:
+    """Turn the JSON a language model wrote (the shape LLM_SYSTEM_PROMPT asks for) into a script.
+    None when it is not usable: no scenes, or fewer than three with spoken text."""
+    try:
         if not data or not data.get("scenes"):
             return None
         scenes = [
@@ -736,9 +744,25 @@ def _llm_lookup(topic: str, language: str) -> Optional[VideoScript]:
     except Exception:
         return None
 
-def create_or_get_script(niche_or_topic: str, language: str = "en", use_llm: bool = True) -> VideoScript:
+def _gemini_lookup(topic: str, language: str) -> Optional[VideoScript]:
+    """Ask Gemini (online) for a fresh script. None when there is no key or no usable script comes back."""
+    from faceless_shorts.config import LANGUAGES, SCENE_MOTIONS
+    from faceless_shorts.integrations import GeminiClient
+
+    spoken = LANGUAGES.get(language, {}).get("name", language)
+    prompt = (
+        f"Write the script for a short vertical video about: {topic}\n"
+        f"Write the title, the hook, every scene's text and the cta in {spoken}. Write every visual_prompt in English.\n"
+        f"Give each scene a different motion from this list: {', '.join(SCENE_MOTIONS)}."
+    )
+    return _script_from_data(GeminiClient().write_json(prompt, system=LLM_SYSTEM_PROMPT), topic)
+
+def create_or_get_script(
+    niche_or_topic: str, language: str = "en", use_llm: bool = True, script_engine: str = "auto"
+) -> VideoScript:
     """
     Unified resolver:
+      0. Gemini (online), only when script_engine="gemini" asks for it by name
       1. Pre-built template / language-suffixed preset (presets/<niche>_<lang>.json)
       2. Curated topic knowledge pack (factual scene scripts for popular topics)
       3. Free local LLM (Ollama / OpenAI-compatible) when reachable
@@ -746,6 +770,13 @@ def create_or_get_script(niche_or_topic: str, language: str = "en", use_llm: boo
     """
     key = niche_or_topic.lower().replace(" ", "_")
     lang = (language or "en").lower()
+
+    # 0. Asked for by name, so it goes first; the steps below still give a script when Gemini does not.
+    if script_engine == "gemini":
+        gemini_script = _gemini_lookup(niche_or_topic, lang)
+        if gemini_script:
+            return gemini_script
+        print("    [!] Gemini did not write the script; the built-in script writer is used instead.")
 
     # 1. Templates & presets (language aware)
     template = get_template(key, language=lang)

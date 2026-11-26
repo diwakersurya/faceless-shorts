@@ -1082,11 +1082,76 @@ MFLUX_MODELS = {
     },
 }
 
-# Image generation engines (all 100% free). `procedural` is the offline fallback.
+# Online models from Google's Gemini API. One key (aistudio.google.com/apikey) serves all three.
+# Google replaces its models every few months, so each id can be changed without touching the code:
+# GEMINI_TEXT_MODEL, GEMINI_TTS_MODEL, GEMINI_TRANSCRIBE_MODEL, GEMINI_IMAGE_MODEL, GEMINI_VIDEO_MODEL. `fallback` is asked when the first is busy.
+# Prices are Google's list prices of November 2026 (ai.google.dev/gemini-api/docs/pricing).
+GEMINI_MODELS = {
+    "text": {
+        "name": "Gemini 4 Hydrogen",
+        "model": "gemini-4-hydrogen",
+        "fallback": "gemini-3.5-flash-lite",
+        "about": "online, free within Google's free limits",
+    },
+    "tts": {
+        "name": "Gemini 3.8 Flash TTS",
+        "model": "gemini-3.8-flash-tts",
+        "about": "online, free within Google's free limits",
+    },
+    "transcribe": {  # hears the Gemini voice-over back, to learn when each word is spoken (for the subtitles)
+        "name": "Gemini 3.5 Transcribe",
+        "model": "gemini-3.5-transcribe",
+        "about": "online, free within Google's free limits",
+    },
+    "image": {
+        "name": "Gemini Nano Banana 2.1",
+        "model": "gemini-nano-banana-2.1",
+        "about": "online, paid: about $0.03 an image",
+    },
+    "video": {
+        "name": "Gemini Omni Flash",
+        "model": "gemini-omni-1.2-flash",
+        "about": "online, paid: about $0.07 a second of video, real motion",
+    },
+}
+GEMINI_VIDEO_PRICE = {"360p": 0.023, "720p": 0.07, "1080p": 0.104}  # US dollars per second of video
+DEFAULT_GEMINI_VIDEO_RESOLUTION = "720p"  # GEMINI_VIDEO_RESOLUTION changes it
+
+def _gemini_label(kind: str) -> str:
+    return f"{GEMINI_MODELS[kind]['name']} ({GEMINI_MODELS[kind]['about']})"
+
+# Who writes the script for a custom topic. `auto` is the tool's own library and writer.
+SCRIPT_ENGINES = {
+    "auto": "Built-in script writer (a local LLM when one is running)",
+    "gemini": _gemini_label("text"),
+}
+DEFAULT_SCRIPT_ENGINE = "auto"
+
+# Who speaks the voice-over. The --voice names differ: VOICES for edge, GEMINI_VOICES for gemini.
+TTS_ENGINES = {
+    "edge": "Microsoft Edge-TTS (free, online, no key)",
+    "gemini": _gemini_label("tts"),
+}
+DEFAULT_TTS_ENGINE = "edge"
+
+# Gemini's ready-made voices and how Google describes each. They speak whatever language the text is in.
+GEMINI_VOICES = {
+    "Zephyr": "Bright", "Puck": "Upbeat", "Charon": "Informative", "Kore": "Firm", "Fenrir": "Excitable",
+    "Leda": "Youthful", "Orus": "Firm", "Aoede": "Breezy", "Callirrhoe": "Easy-going", "Autonoe": "Bright",
+    "Enceladus": "Breathy", "Iapetus": "Clear", "Umbriel": "Easy-going", "Algieba": "Smooth", "Despina": "Smooth",
+    "Erinome": "Clear", "Algenib": "Gravelly", "Rasalgethi": "Informative", "Laomedeia": "Upbeat", "Achernar": "Soft",
+    "Alnilam": "Firm", "Schedar": "Even", "Gacrux": "Mature", "Pulcherrima": "Forward", "Achird": "Friendly",
+    "Zubenelgenubi": "Casual", "Vindemiatrix": "Gentle", "Sadachbia": "Lively", "Sadaltager": "Knowledgeable",
+    "Sulafat": "Warm",
+}
+DEFAULT_GEMINI_VOICE = "Charon"
+
+# Image generation engines (free, except Gemini). `procedural` is the offline fallback.
 IMAGE_ENGINES = {
     "pollinations": "Pollinations.ai Flux (free, keyless cloud)",
     "comfyui": "Local ComfyUI (github.com/comfyanonymous/ComfyUI, free & private)",
     **{key: f"{model['name']} ({model['about']})" for key, model in MFLUX_MODELS.items()},
+    "gemini": _gemini_label("image"),
     "procedural": "Offline procedural Pillow canvas (zero network)"
 }
 DEFAULT_IMAGE_ENGINE = "pollinations"
@@ -1094,9 +1159,17 @@ DEFAULT_IMAGE_ENGINE = "pollinations"
 # Scene video engines. `none` keeps the classic still image + Ken Burns motion.
 VIDEO_ENGINES = {
     "none": "Still image + Ken Burns camera motion",
-    "fastmetal": "Local FastMetal 1.3B text-to-video (Apple Silicon, free & private, real motion)"
+    "fastmetal": "Local FastMetal 1.3B text-to-video (Apple Silicon, free & private, real motion)",
+    "gemini": _gemini_label("video"),
 }
 DEFAULT_VIDEO_ENGINE = "none"
+
+# Camera moves a scene can ask for by name (the renderer rotates through them when a scene names none).
+SCENE_MOTIONS = [
+    "punch_zoom_in", "dramatic_zoom_out", "pan_left", "whip_zoom",
+    "pan_right", "vertigo_shake", "rise_up", "orbit_sway",
+    "shockwave_out", "pulse_heartbeat",
+]
 
 # Auto-Emoji keyword triggers
 EMOJI_KEYWORDS = {
