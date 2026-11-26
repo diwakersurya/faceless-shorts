@@ -33,8 +33,11 @@ python -m faceless_shorts generate --script-json presets/stoicism.json --output 
 # Real-motion AI clip per scene with a local model (Apple Silicon, minutes per scene; see README)
 python -m faceless_shorts generate --niche stoicism --video-engine fastmetal
 
-# Web app (React + Astryx) at http://127.0.0.1:4780
+# Web app (React + Astryx) at http://127.0.0.1:4780 (add --tailnet to reach it from a phone over Tailscale)
 cd ui && bun install && bun run serve
+
+# Say once where the FastMetal video model is installed, and check that it is ready
+python -m faceless_shorts config --fastmetal-home ~/fastmetal-video
 
 # Offline test (superfast procedural background)
 python -m faceless_shorts generate --niche stoicism --offline --output output/offline.mp4

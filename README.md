@@ -273,17 +273,22 @@ The download can be stopped and started again with the same last command; it con
 
 ### 3. Tell faceless-shorts where it is
 
-Nothing to do if you installed it in `~/fastmetal-video`. For any other folder, either set it in the web app (Settings → FastMetal folder) or export it:
+Nothing to do if you installed it in `~/fastmetal-video`. For any other folder, save it once. The command line and the web app both use the saved folder:
 
 ```bash
-export FACELESS_FASTMETAL_HOME=/path/to/the/folder   # the one that holds FastVideo/ and FastMetal-1.3B-QAD/
+python -m faceless_shorts config --fastmetal-home /path/to/the/folder   # the one that holds FastVideo/ and FastMetal-1.3B-QAD/
+python -m faceless_shorts config                                        # shows the saved folder and whether FastMetal is ready
 ```
 
-### 4. Confirm it was found
+The web app does the same under Settings (the gear, top right). `FACELESS_FASTMETAL_HOME`, when set in a shell, wins over the saved folder for that shell.
+
+### 4. Confirm it is ready
 
 ```bash
-python -m faceless_shorts doctor   # the "fastmetal" row must say OK; if not, it names the file it could not find
+python -m faceless_shorts doctor   # the "fastmetal" row must say OK
 ```
+
+When it is not ready, `doctor`, `config` and the web app's Settings all name the one thing that is not there and print the command that puts it there.
 
 ### 5. Make a short
 
@@ -292,7 +297,7 @@ python -m faceless_shorts generate --niche stoicism --video-engine fastmetal
 python -m faceless_shorts generate --topic "why foxes hunt at dawn" --video-engine fastmetal -tr dissolve
 ```
 
-In the web app, turn on **Generate scenes as AI video**. The switch is off and says why when the model is not found.
+In the web app, turn on **Generate scenes as AI video**. The switch is off and says why when FastMetal is not ready.
 
 ### What to expect
 
@@ -304,16 +309,34 @@ In the web app, turn on **Generate scenes as AI video**. The switch is off and s
 
 | Setting | Default | Purpose |
 | :--- | :--- | :--- |
-| `FACELESS_FASTMETAL_HOME` | `~/fastmetal-video` | Folder that holds `FastVideo/` and `FastMetal-1.3B-QAD/` |
-| `FACELESS_FASTMETAL_ARGS` | `--fast` | Extra generator flags. `--fast` generates half the frames and interpolates the rest. A 16-18 GB Mac needs it: generating every frame runs out of GPU memory there. On a larger Mac, set it to an empty string to generate every frame |
+| `config --fastmetal-home` (saved in `~/.config/faceless-shorts/settings.json`) | `~/fastmetal-video` | Folder that holds `FastVideo/` and `FastMetal-1.3B-QAD/` |
+| `FACELESS_FASTMETAL_HOME` | not set | The same folder for one shell only; wins over the saved one |
+| `FACELESS_FASTMETAL_ARGS` | `--fast` | Extra generator flags. `--fast` generates half the frames and interpolates the rest. A 16-18 GB Mac needs it (see the table below). On a larger Mac, set it to an empty string to generate every frame |
 
-**If a scene says `FastMetal failed: ... Insufficient Memory`**: close memory-heavy apps (browsers, other AI models) and run it again; finished clips are reused. Keep `--fast` on 16-18 GB.
+### Problems met while setting it up, and their fixes
+
+Each of these happened on an M3 Pro MacBook with 18 GB of memory.
+
+| What you see | Why | Fix |
+| :--- | :--- | :--- |
+| `git clone https://github.com/FastVideo/FastVideo.git` answers "Repository not found" | The model card on Hugging Face names a repository that does not exist | Clone `https://github.com/hao-ai-lab/FastVideo.git`, as in step 2 |
+| `uv venv` or `pip install` fails on the Python version | FastVideo's MLX runtime needs Python 3.12; the system `python3` is often older | `uv venv --python 3.12 --seed` (uv downloads 3.12 by itself) |
+| The model download stops growing part-way | A stalled connection; nothing is lost | Stop it and run the `hf download` line again: it continues. If it stalls again, prefix it with `HF_HUB_DISABLE_XET=1` |
+| The disk fills during the download | The model is 13.4 GB and the Python environment 2 GB; a Mac that is swapping uses more disk on top | Free about 20 GB first. Package caches are safe to clear: `uv cache clean`, `brew cleanup`, `yarn cache clean` |
+| The web app or `doctor` says FastMetal is not ready and names `.../fastmetal-video` | It is installed in another folder, and faceless-shorts looks in `~/fastmetal-video` | `python -m faceless_shorts config --fastmetal-home <folder>`, or Settings in the web app |
+| It names `.../FastVideo/.venv/bin/python` | The folder is right but the Python environment was never created there | Run the `uv venv` line of step 2 inside `FastVideo/` |
+| It names `.../FastMetal-1.3B-QAD` | The model was not downloaded, or went to another folder | Run the `hf download` line of step 2 |
+| `[METAL] Command buffer execution failed: Insufficient Memory` when every frame is generated | The last step decodes all 81 frames at once and needs more than 18 GB. Closing other apps does not help | Keep `--fast` (the default): it generates 41 frames and interpolates to 81 |
+| The same error with `--fast` | Other apps hold the memory: the Mac is deep in swap | Close browsers and other AI models, then run it again; finished clips are reused |
+| A scene takes far longer than 5 minutes | The 11 GB text encoder is being read through swap | Close memory-heavy apps. A prompt seen before skips this step entirely |
+| The render ends with `Error reinitializing filters` | An older copy of this project drew the progress bar with a filter FFmpeg 9.1 rejects | Update to the current version; `--no-progress-bar` avoids it on an old one |
+| The video has no subtitles, with a warning about `libass` | Homebrew's default `ffmpeg` is built without libass | `brew install ffmpeg-full`; it is found by itself |
 
 ---
 
 ## 🖥️ Web App
 
-A local page for making shorts without the command line: fill in a form, watch the progress, then play, download or delete the results. It is built with React and the [Astryx](https://github.com/meta/astryx) design system and answers only on your own computer.
+A local page for making shorts without the command line: fill in a form, watch the progress, then play, download or delete the results. It is built with React and the [Astryx](https://github.com/meta/astryx) design system and answers only on your own computer, unless you open it to your own devices with Tailscale (below).
 
 ```bash
 cd ui
@@ -322,11 +345,61 @@ bun run serve      # then open http://127.0.0.1:4780
 ```
 
 - **New short**: your own topic or a ready-made script, language and voice, art and subtitle style; transition, colour grade, quality, music and the progress bar are under *More options*.
-- **AI video scenes**: the *Generate scenes as AI video* switch uses the local FastMetal model (see the section above). Set its folder under Settings (the gear, top right).
+- **AI video scenes**: the *Generate scenes as AI video* switch uses the local FastMetal model (see the section above). When it is not ready, Settings (the gear, top right) says what is missing and the command that fixes it.
 - **Progress**: the five steps of the render, the scene being made, the full log, and a Stop button. One short is made at a time.
 - **Your shorts**: every video in `output/`. Open one to play it, copy its title, caption and tags, download it or delete it.
 
 The page runs `python3 -m faceless_shorts` from the repository, so install the Python requirements first (`pip install -r requirements.txt`). To use another Python or port, create `ui/config.json`, for example `{ "python": "/path/to/python", "port": 4780 }`. `bun run dev` reloads the page as the code changes; `bun test` and `bun run typecheck` check it.
+
+### From your phone (Tailscale)
+
+Making a short needs the computer; starting one, watching it and collecting the result can be done from a phone, a tablet or another laptop. [Tailscale](https://tailscale.com) connects your devices privately, wherever they are. The computer keeps doing the work; the phone is only the screen.
+
+**Set up, once**
+
+1. Install Tailscale on the computer and on the phone, and sign in to the **same account** on both.
+2. On the computer, start the app with:
+   ```bash
+   bun run serve --tailnet
+   ```
+   It prints the address for your other devices, `https://<computer>.<tailnet>.ts.net/`, and the Tailscale command for the next step. If Tailscale is switched off or not signed in, it says so and stops.
+3. On the computer, turn the link on:
+   ```bash
+   tailscale serve --bg 4780
+   ```
+   - On a Mac with Tailscale from the App Store the command is not on the PATH. Use the full path that step 2 printed: `/Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg 4780`.
+   - The first time, Tailscale answers "Serve is not enabled on your tailnet" with a link. Open it, sign in and enable it; the waiting command then finishes by itself.
+4. On the phone, switch Tailscale on and open the address from step 2.
+
+**Every day after that**
+
+- On the computer: `bun run serve --tailnet`, with the computer awake. The link from step 3 stays on.
+- On the phone: Tailscale on, open the address. In Safari on an iPhone or iPad, the share button has **Add to Home Screen**: the app then has its own icon and opens full-screen, like an installed app.
+- On the computer itself keep using `http://127.0.0.1:4780`.
+- A short keeps being made after the phone is locked or the page is closed. Open the page again to see where it is.
+
+**Turn it off**
+
+```bash
+tailscale serve reset
+```
+and start the app with plain `bun run serve`; it then answers only on the computer itself again.
+
+**How safe this is**
+
+- The app still listens only on the computer itself. Tailscale brings requests to it, so nobody on the same Wi-Fi or on the internet can reach it; only devices signed in to your tailnet can.
+- The app answers to the tailnet name only when started with `--tailnet` (or when the name is listed in `allowedHosts` in `ui/config.json`), and still refuses requests made by other websites.
+- **There is no sign-in in the app.** Every device on your tailnet can start renders and delete shorts. On a tailnet you share with other people, such as one from work, that includes their devices.
+
+**If it does not load**
+
+| On the phone | Likely reason | Do this |
+| :--- | :--- | :--- |
+| Cannot find the server | Tailscale is off on the phone, or it is on another account | Switch it on; check the account |
+| Certificate or secure connection error | HTTPS is not enabled for the tailnet, or the computer was renamed after step 3 | In the Tailscale admin console under DNS, enable HTTPS Certificates; then `tailscale serve reset` and `tailscale serve --bg 4780` |
+| A page that says "forbidden" | The app was started without `--tailnet` | Restart it with `bun run serve --tailnet` |
+| Nothing answers | The computer is asleep, or the app is not running | Wake it; start the app |
+| "Something already answers on port 4780" when starting | Another copy of the app is running, perhaps from another checkout | Stop that one first, or set another `port` in `ui/config.json` |
 
 ---
 
