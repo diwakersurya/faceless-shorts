@@ -23,6 +23,7 @@ from faceless_shorts.config import (
     DEFAULT_FPS,
     ART_STYLES,
     DEFAULT_IMAGE_ENGINE,
+    MFLUX_MODELS,
 )
 from faceless_shorts.style_processor import StyleProcessor
 from faceless_shorts.vfx.theatre_easing import get_theatre_motion_expr
@@ -67,11 +68,25 @@ class VisualManager:
         Generate a vertical AI image using the selected free engine:
           - pollinations: keyless cloud Flux generation
           - comfyui: local ComfyUI instance (private, GPU, free)
+          - flux2-klein / z-image-turbo: local image model on Apple Silicon (private, free)
           - procedural: offline Pillow canvas (zero network)
         Always degrades to the procedural canvas so rendering never fails.
         """
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         chosen_seed = seed if seed is not None else random.randint(1000, 999999)
+
+        if self.engine in MFLUX_MODELS:
+            from faceless_shorts.integrations import MfluxClient
+            style_config = ART_STYLES.get(self.art_style, ART_STYLES["hyperreal"])
+            path = MfluxClient(self.engine).generate(
+                prompt=f"{prompt}, {style_config['prompt_suffix']}",
+                output_path=output_path,
+                seed=chosen_seed,
+                portrait=self.height >= self.width,
+            )
+            if path:
+                return path
+            print("    [!] Local image model unavailable, falling back to Pollinations Flux.")
 
         if self.engine == "comfyui":
             try:
@@ -135,6 +150,9 @@ class VisualManager:
             except Exception:
                 return {job["output_path"]: self.generate_procedural_background(
                     output_path=job["output_path"], topic=job.get("prompt", ""))}
+
+        if self.engine in MFLUX_MODELS:
+            max_workers = 1  # one local model at a time: each copy would need its own memory
 
         results: Dict[str, str] = {}
         with ThreadPoolExecutor(max_workers=max_workers) as pool:

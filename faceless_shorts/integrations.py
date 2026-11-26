@@ -16,6 +16,8 @@ Projects credited (all free / open source):
   https://github.com/comfyanonymous/ComfyUI
 - FastVideo / FastMetal — local Apple Silicon (MLX) text-to-video
   https://github.com/hao-ai-lab/FastVideo
+- mflux — local Apple Silicon (MLX) text-to-image (Z-Image-Turbo, FLUX.2 klein)
+  https://github.com/filipstrand/mflux
 - yt-dlp — feature-rich media downloader (B-roll / reference footage)
   https://github.com/yt-dlp/yt-dlp
 - Ollama — local LLM runtime for script writing
@@ -44,6 +46,8 @@ import tempfile
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
+
+from faceless_shorts.config import MFLUX_MODELS
 from urllib import error as urlerror
 from urllib.parse import urlencode
 from urllib import request as urlrequest
@@ -53,6 +57,7 @@ __all__ = [
     "WhisperTranscriber",
     "ComfyUIClient",
     "FastMetalClient",
+    "MfluxClient",
     "YtDlpHelper",
     "LLMScriptWriter",
     "StockBRoll",
@@ -75,6 +80,7 @@ COMFY_POLL_TIMEOUT = 120.0      # total seconds to wait for a ComfyUI render
 YTDLP_TIMEOUT = 300.0           # cap for a single yt-dlp download
 TRANSCRIBE_TIMEOUT = 600.0      # cap for an ffmpeg whisper transcription
 FASTMETAL_TIMEOUT = 1800.0      # cap for one FastMetal scene clip (text encode + denoise + decode)
+MFLUX_TIMEOUT = 900.0           # cap for one mflux image (the first one also downloads the model)
 
 DEFAULT_COMFY_URL = "http://127.0.0.1:8188"
 DEFAULT_FASTMETAL_HOME = "~/fastmetal-video"
@@ -91,7 +97,7 @@ HF_WHISPER_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
 
 # Tool keys reported by doctor() / doctor_report().
-TOOL_KEYS: Tuple[str, ...] = ("whisper", "comfyui", "fastmetal", "ytdlp", "llm", "stock")
+TOOL_KEYS: Tuple[str, ...] = ("whisper", "comfyui", "mflux", "fastmetal", "ytdlp", "llm", "stock")
 
 # rich is an optional dependency; plain aligned text is the fallback.
 try:  # pragma: no cover - exercised implicitly when rich is installed
@@ -367,6 +373,17 @@ class ToolRegistry:
             "hint": "run it on :8188 or set FACELESS_COMFY_URL",
         }
 
+        # --- mflux: local text-to-image ---------------------------------------
+        mflux = MfluxClient()
+        mflux_problem = mflux.problem()
+        report["mflux"] = {
+            "available": mflux_problem is None,
+            "version": None,
+            "kind": "local text-to-image (Apple Silicon)",
+            "install": "uv tool install --python 3.12 mflux",
+            "hint": mflux_problem[1] if mflux_problem else "--engine " + " | ".join(MFLUX_MODELS),
+        }
+
         # --- fastmetal: local text-to-video ---------------------------------
         fastmetal_problem = FastMetalClient().problem()
         report["fastmetal"] = {
@@ -432,6 +449,7 @@ class ToolRegistry:
         handlers = {
             "whisper": WhisperTranscriber.available,
             "comfyui": ComfyUIClient().available,
+            "mflux": MfluxClient.available,
             "fastmetal": FastMetalClient.available,
             "ytdlp": YtDlpHelper.available,
             "llm": LLMScriptWriter.available,
@@ -766,6 +784,87 @@ class ComfyUIClient:
             )
         except Exception:
             return None
+
+
+# --------------------------------------------------------------------------- #
+# mflux (local Apple Silicon text-to-image)
+# --------------------------------------------------------------------------- #
+class MfluxClient:
+    """Generates images with a local model through the mflux command-line tools."""
+
+    def __init__(self, model: Optional[str] = None) -> None:
+        # *model* is an image-engine key; anything else means the first (fastest) model.
+        self.key = model if model in MFLUX_MODELS else next(iter(MFLUX_MODELS))
+        self.spec: Dict[str, Any] = MFLUX_MODELS[self.key]
+
+    def command(self) -> Optional[str]:
+        """Full path of this model's mflux command, or None when mflux is not installed."""
+        name = str(self.spec["command"])
+        # `uv tool install` puts commands in ~/.local/bin, which is not always on the PATH of the app that runs us.
+        tool_dir = os.path.join(os.path.expanduser("~"), ".local", "bin")
+        return shutil.which(name) or shutil.which(name, path=tool_dir)
+
+    def problem(self) -> Optional[Tuple[str, str]]:
+        """What is in the way, as (what, how to fix it). None when images can be generated."""
+        if self.command() is None:
+            return (
+                str(self.spec["command"]),
+                "mflux is not installed. Run: uv tool install --python 3.12 mflux",
+            )
+        return None
+
+    @staticmethod
+    def available() -> bool:
+        """True when mflux is installed (the model itself is downloaded the first time it is used)."""
+        return MfluxClient().problem() is None
+
+    def generate(
+        self,
+        prompt: str,
+        output_path: str,
+        seed: int = 42,
+        portrait: bool = True,
+    ) -> Optional[str]:
+        """Generate one image into *output_path* (any format Pillow writes). None on any failure."""
+        problem = self.problem()
+        if problem:
+            print(f"    [!] mflux is not ready: {problem[1]}")
+            return None
+        width, height = int(self.spec["width"]), int(self.spec["height"])
+        if not portrait:
+            width, height = height, width
+        output_path = os.path.abspath(output_path)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        raw_path = output_path + ".mflux.png"  # mflux writes PNG; the pipeline wants its own name and format
+        cmd = [
+            str(self.command()),
+            "--model", str(self.spec["model"]),
+            "--prompt", prompt,
+            "--width", str(width),
+            "--height", str(height),
+            "--steps", str(self.spec["steps"]),
+            "--seed", str(seed),
+            "--output", raw_path,
+        ]
+        if self.spec.get("base_model"):
+            cmd += ["--base-model", str(self.spec["base_model"])]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=MFLUX_TIMEOUT)
+            if proc.returncode != 0 or not os.path.exists(raw_path):
+                lines = (proc.stderr or proc.stdout or "").strip().splitlines()
+                print(f"    [!] mflux failed: {lines[-1] if lines else 'no output'}")
+                return None
+            from PIL import Image
+
+            with Image.open(raw_path) as image:
+                image.convert("RGB").save(output_path, quality=95)
+            return output_path
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"    [!] mflux could not run ({exc}).")
+            return None
+        finally:
+            if os.path.exists(raw_path):
+                os.remove(raw_path)
 
 
 # --------------------------------------------------------------------------- #

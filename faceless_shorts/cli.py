@@ -25,6 +25,7 @@ from faceless_shorts.config import (
     DEFAULT_QUALITY,
     IMAGE_ENGINES,
     DEFAULT_IMAGE_ENGINE,
+    MFLUX_MODELS,
     VIDEO_ENGINES,
     DEFAULT_VIDEO_ENGINE,
 )
@@ -372,9 +373,12 @@ def run_generate(args):
 
 def print_options():
     """Print every choice the generate command accepts as JSON (read by the web UI)."""
-    from faceless_shorts.integrations import FastMetalClient, load_user_settings
+    from faceless_shorts.integrations import ComfyUIClient, FastMetalClient, MfluxClient, load_user_settings
 
     fastmetal_problem = FastMetalClient().problem()
+    # Engines that need something installed or running on this computer: what is in the way, if anything.
+    engine_fixes = {key: (MfluxClient(key).problem() or (None, None))[1] for key in MFLUX_MODELS}
+    engine_fixes["comfyui"] = None if ComfyUIClient.available() else "ComfyUI is not running. Start it on port 8188, or set FACELESS_COMFY_URL."
     options = {
         "presets": [{"value": key, "label": t.title, "scenes": len(t.scenes)} for key, t in VIRAL_TEMPLATES.items()],
         "languages": [
@@ -400,7 +404,15 @@ def print_options():
             for key, q in QUALITY_PROFILES.items()
         ],
         "music": ["none", "dark_tension", "curiosity_ambient", "cinematic_pulse", "sub_bass_808"],
-        "imageEngines": [{"value": key, "label": label} for key, label in IMAGE_ENGINES.items()],
+        "imageEngines": [
+            {
+                "value": key,
+                "label": label,
+                "description": engine_fixes.get(key),
+                "available": engine_fixes.get(key) is None,
+            }
+            for key, label in IMAGE_ENGINES.items()
+        ],
         "videoEngines": [{"value": key, "label": label} for key, label in VIDEO_ENGINES.items()],
         "fastmetal": {
             "available": fastmetal_problem is None,
@@ -560,7 +572,7 @@ def main():
     gen_parser.add_argument("--fps", type=int, default=None, help="Override output frame rate (24/30/60)")
     gen_parser.add_argument("--crf", type=int, default=None, help="Override x264 CRF quality (lower = better, 15-28)")
     gen_parser.add_argument("--encoder-preset", type=str, default=None, choices=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"], help="Override x264 encoder speed/quality preset")
-    gen_parser.add_argument("--engine", type=str, default=DEFAULT_IMAGE_ENGINE, choices=list(IMAGE_ENGINES.keys()), help="Image generation engine (pollinations, comfyui, procedural)")
+    gen_parser.add_argument("--engine", type=str, default=DEFAULT_IMAGE_ENGINE, choices=list(IMAGE_ENGINES.keys()), help="Image generation engine: pollinations, comfyui, a local model (flux2-klein, z-image-turbo) or procedural")
     gen_parser.add_argument("--video-engine", type=str, default=DEFAULT_VIDEO_ENGINE, choices=list(VIDEO_ENGINES.keys()), help="Scene video engine: 'fastmetal' generates a real-motion AI clip per scene with a local model (Apple Silicon, minutes per scene) instead of Ken Burns motion on a still image")
     gen_parser.add_argument("-o", "--output", type=str, help="Output MP4 file path")
     gen_parser.add_argument("--script-json", type=str, help="Path to custom JSON script file")

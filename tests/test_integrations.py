@@ -27,7 +27,7 @@ from faceless_shorts.integrations import (
 )
 
 # The exact tool keys the registry must report.
-EXPECTED_TOOLS = ("whisper", "comfyui", "fastmetal", "ytdlp", "llm", "stock")
+EXPECTED_TOOLS = ("whisper", "comfyui", "mflux", "fastmetal", "ytdlp", "llm", "stock")
 # Every doctor() entry must carry these keys.
 INFO_KEYS = ("available", "version", "kind", "install", "hint")
 # Env vars that could leak real credentials / endpoints into the tests.
@@ -263,6 +263,7 @@ class DoctorReportTests(unittest.TestCase):
             "WhisperTranscriber",
             "ComfyUIClient",
             "FastMetalClient",
+            "MfluxClient",
             "YtDlpHelper",
             "LLMScriptWriter",
             "StockBRoll",

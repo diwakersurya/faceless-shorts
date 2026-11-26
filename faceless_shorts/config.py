@@ -1056,10 +1056,37 @@ QUALITY_PROFILES = {
 }
 DEFAULT_QUALITY = "social"
 
+# Local image models, run on Apple Silicon by mflux (github.com/filipstrand/mflux). Each one is an
+# image engine of its own: its key is what --engine takes. `width`/`height` are the portrait size
+# generated (multiples of 16); the renderer scales the picture to the canvas.
+MFLUX_MODELS = {
+    "flux2-klein": {
+        "name": "FLUX.2 klein 4B",
+        "about": "local, fast: 4 steps",
+        "command": "mflux-generate-flux2",
+        "model": "mflux-community/flux2-klein-4b-mflux-q4",
+        "base_model": "flux2-klein-4b",
+        "steps": 4,
+        "width": 720,
+        "height": 1280,
+    },
+    "z-image-turbo": {
+        "name": "Z-Image-Turbo",
+        "about": "local, most photographic, 3x slower: 9 steps",
+        "command": "mflux-generate-z-image-turbo",
+        "model": "filipstrand/Z-Image-Turbo-mflux-4bit",
+        "base_model": None,
+        "steps": 9,
+        "width": 720,
+        "height": 1280,
+    },
+}
+
 # Image generation engines (all 100% free). `procedural` is the offline fallback.
 IMAGE_ENGINES = {
     "pollinations": "Pollinations.ai Flux (free, keyless cloud)",
     "comfyui": "Local ComfyUI (github.com/comfyanonymous/ComfyUI, free & private)",
+    **{key: f"{model['name']} ({model['about']})" for key, model in MFLUX_MODELS.items()},
     "procedural": "Offline procedural Pillow canvas (zero network)"
 }
 DEFAULT_IMAGE_ENGINE = "pollinations"

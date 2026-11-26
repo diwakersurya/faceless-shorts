@@ -234,7 +234,7 @@ class TestConfigIntegrity(unittest.TestCase):
             self.assertIn(style, ART_STYLES, f"missing required style: {style}")
 
     def test_image_engines_registered(self):
-        self.assertEqual(set(IMAGE_ENGINES), {"pollinations", "comfyui", "procedural"})
+        self.assertEqual(set(IMAGE_ENGINES), {"pollinations", "comfyui", "flux2-klein", "z-image-turbo", "procedural"})
 
     def test_transitions_and_styles_counts(self):
         self.assertGreaterEqual(len(TRANSITIONS), 15)
