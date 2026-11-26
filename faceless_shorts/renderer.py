@@ -505,16 +505,18 @@ class VideoRenderer:
             )
             bar_h = PROGRESS_BAR_CONFIG["height"]
             y_pos = self.height - bar_h - 4
-            burn_filters.append(
-                f"drawbox=x=0:y={y_pos}:w='iw*(t/{total_duration:.3f})':h={bar_h}:color={bar_color}:t=fill"
-            )
+            # A solid strip slides in from the left with overlay. drawbox cannot do this:
+            # its expressions are not re-evaluated over time (`t` is thickness there) and
+            # FFmpeg 9.1 rejects the old expression outright.
+            bar_source = f"color=c={bar_color}:s={self.width}x{bar_h}:r={self.fps}[bar];"
+            bar_overlay = f"[sub];[sub][bar]overlay=x='-w+w*t/{total_duration:.3f}':y={y_pos}:shortest=1"
+        else:
+            bar_source = bar_overlay = ""
         # Normalize to broadcast-standard limited range (TV) before encoding so
         # platforms never mis-read full-range (yuvj420p) luma.
-        burn_filters.append("scale=out_range=tv")
-        burn_filters.append("format=yuv420p")
-        video_filters = ",".join(burn_filters)
+        video_filters = f"{','.join(burn_filters) or 'null'}{bar_overlay},scale=out_range=tv,format=yuv420p"
 
-        filter_complex = f"{fx_body};[fx]{video_filters}[vout]"
+        filter_complex = f"{fx_body};{bar_source}[fx]{video_filters}[vout]"
 
         final_cmd = [
             self.ffmpeg_bin, "-y",
