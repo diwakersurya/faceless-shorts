@@ -13,7 +13,7 @@ import { VStack } from "@astryxdesign/core/VStack";
 import { Sparkles } from "lucide-react";
 import { useState } from "react";
 import { type RenderRequest, renderRequest } from "../../shared/schema";
-import type { Choice, Options } from "../api";
+import type { Choice, Engine, Options } from "../api";
 import { useStartRender } from "../queries";
 
 const STORE = "faceless-shorts-ui.form";
@@ -27,28 +27,40 @@ function initial(options: Options): RenderRequest {
   } catch {} // nothing usable was kept
   const d = options.defaults;
   const pick = (value: unknown, list: Choice[], fallback: string) => (list.some((c) => c.value === value) ? (value as string) : fallback);
+  // An engine that was installed, running or had its key last time may not be usable now.
+  const usable = (value: unknown, list: Engine[], fallback: string) => pick(value, list.filter((e) => e.available), fallback);
   const language = pick(last.language, options.languages, d.language);
   const spoken = options.languages.find((l) => l.value === language);
-  const videoEngine = pick(last.videoEngine, options.videoEngines, d.videoEngine);
+  const ttsEngine = usable(last.ttsEngine, options.ttsEngines, d.ttsEngine);
+  // Each speech engine has its own voices: a voice kept from last time counts only if the engine has it.
+  const voice =
+    ttsEngine === "gemini"
+      ? pick(last.voice, options.gemini.voices, options.gemini.defaultVoice)
+      : spoken?.voices.includes(last.voice as string)
+        ? (last.voice as string)
+        : (spoken?.defaultVoice ?? d.voice);
   return {
     source: last.source === "preset" ? "preset" : "topic",
     topic: typeof last.topic === "string" ? last.topic : "",
     preset: pick(last.preset, options.presets, options.presets[0]?.value ?? ""),
     language,
-    voice: spoken?.voices.includes(last.voice as string) ? (last.voice as string) : (spoken?.defaultVoice ?? d.voice),
+    voice,
     subtitleStyle: pick(last.subtitleStyle, options.subtitleStyles, d.subtitleStyle),
     artStyle: pick(last.artStyle, options.artStyles, d.artStyle),
     transition: pick(last.transition, options.transitions, d.transition),
     effects: pick(last.effects, options.effects, d.effects),
     quality: pick(last.quality, options.qualities, d.quality),
     music: options.music.includes(last.music as string) ? (last.music as string) : d.music,
-    // An engine that was installed or running last time may not be now.
-    imageEngine: pick(last.imageEngine, options.imageEngines.filter((e) => e.available), d.imageEngine),
-    // The video model may have been removed since it was last chosen.
-    videoEngine: videoEngine === "fastmetal" && !options.fastmetal.available ? d.videoEngine : videoEngine,
+    scriptEngine: usable(last.scriptEngine, options.scriptEngines, d.scriptEngine),
+    ttsEngine,
+    imageEngine: usable(last.imageEngine, options.imageEngines, d.imageEngine),
+    videoEngine: usable(last.videoEngine, options.videoEngines, d.videoEngine),
     progressBar: typeof last.progressBar === "boolean" ? last.progressBar : true,
   };
 }
+
+/** An engine that cannot be used here stays in the list, switched off, with what it needs. */
+const engineChoices = (list: Engine[]) => list.map((e) => ({ value: e.value, label: e.label, description: e.description ?? undefined, disabled: !e.available }));
 
 const words = (key: string) => key.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
 
@@ -67,7 +79,7 @@ function Form({ options, busy, onSettings }: Props) {
   const topicError = form.source === "topic" && form.topic.trim() && !parsed.success ? parsed.error.issues.find((i) => i.path[0] === "topic")?.message : undefined;
   const ready = parsed.success && !busy && !start.isPending;
   const language = options.languages.find((l) => l.value === form.language);
-  const voices = options.voices.filter((v) => language?.voices.includes(v.value));
+  const voices = form.ttsEngine === "gemini" ? options.gemini.voices : options.voices.filter((v) => language?.voices.includes(v.value));
   const set = (field: keyof RenderRequest) => (value: string | null) => {
     if (value !== null) update({ [field]: value });
   };
@@ -95,20 +107,48 @@ function Form({ options, busy, onSettings }: Props) {
               status={topicError ? { type: "error", message: topicError } : undefined}
             />
           ) : (
-            <Selector label="Script" options={options.presets.map((p) => ({ value: p.value, label: p.label, description: `${p.scenes} scenes` }))} value={form.preset} onChange={set("preset")} />
+            <Selector label="Ready-made script" options={options.presets.map((p) => ({ value: p.value, label: p.label, description: `${p.scenes} scenes` }))} value={form.preset} onChange={set("preset")} />
           )}
-          <Switch
-            label="Generate scenes as AI video"
-            description="A real-motion clip for each scene from the local FastMetal model, instead of camera moves on a still image. About 5 minutes per scene."
-            value={form.videoEngine === "fastmetal"}
-            onChange={(on) => update({ videoEngine: on ? "fastmetal" : "none" })}
-            isDisabled={!options.fastmetal.available}
-            disabledMessage={`FastMetal is not ready: ${options.fastmetal.missing} does not exist. Settings shows how to fix it.`}
-            labelPosition="start"
-            labelSpacing="spread"
-            width="100%"
-          />
-          {!options.fastmetal.available && <Button label="Set up FastMetal" variant="ghost" size="sm" onClick={onSettings} />}
+          <VStack gap={3}>
+            <VStack gap={1}>
+              <Text weight="medium">Who makes each part</Text>
+              <Text size="sm" color="secondary">
+                Each part has its own choice, so they can be mixed freely.
+              </Text>
+            </VStack>
+            <Selector
+              label="Script"
+              options={engineChoices(options.scriptEngines)}
+              value={form.scriptEngine}
+              onChange={set("scriptEngine")}
+              isDisabled={form.source === "preset"}
+              disabledMessage="A ready-made script is already written. Choose Your topic to have one written."
+            />
+            <Selector
+              label="Voice-over"
+              options={engineChoices(options.ttsEngines)}
+              value={form.ttsEngine}
+              onChange={(value) => {
+                // The voices belong to the engine: changing it moves to that engine's usual voice.
+                if (value) update({ ttsEngine: value, voice: value === "gemini" ? options.gemini.defaultVoice : (language?.defaultVoice ?? options.defaults.voice) });
+              }}
+            />
+            <Selector
+              label="Images"
+              description={form.videoEngine === "none" ? undefined : "Used only for a scene whose video clip could not be made."}
+              options={engineChoices(options.imageEngines)}
+              value={form.imageEngine}
+              onChange={set("imageEngine")}
+            />
+            <Selector
+              label="Video"
+              description="A video model makes a real-motion clip for each scene, instead of camera moves on its image."
+              options={engineChoices(options.videoEngines)}
+              value={form.videoEngine}
+              onChange={set("videoEngine")}
+            />
+            {(!options.fastmetal.available || !options.gemini.configured) && <Button label="Set up FastMetal and Gemini" variant="ghost" size="sm" onClick={onSettings} />}
+          </VStack>
           <Grid columns={2} gap={3}>
             <Selector
               label="Language"
@@ -117,7 +157,8 @@ function Form({ options, busy, onSettings }: Props) {
               onChange={(value) => {
                 const next = options.languages.find((l) => l.value === value);
                 // Each language has its own voices: keep the voice if it speaks the new language, else take that language's usual one.
-                if (next) update({ language: next.value, voice: next.voices.includes(form.voice) ? form.voice : next.defaultVoice });
+                // Gemini's voices speak every language, so they stay.
+                if (next) update({ language: next.value, voice: form.ttsEngine === "gemini" || next.voices.includes(form.voice) ? form.voice : next.defaultVoice });
               }}
             />
             <Selector label="Voice" options={voices} value={form.voice} onChange={set("voice")} />
@@ -132,14 +173,6 @@ function Form({ options, busy, onSettings }: Props) {
                 <Selector label="Quality" options={options.qualities} value={form.quality} onChange={set("quality")} />
                 <Selector label="Background music" options={options.music.map((m) => ({ value: m, label: words(m) }))} value={form.music} onChange={set("music")} />
               </Grid>
-              <Selector
-                label="Still images come from"
-                description="Used for every scene that is not an AI video clip."
-                // An engine that cannot be used here stays in the list, switched off, with what it needs.
-                options={options.imageEngines.map((e) => ({ value: e.value, label: e.label, description: e.description ?? undefined, disabled: !e.available }))}
-                value={form.imageEngine}
-                onChange={set("imageEngine")}
-              />
               <Switch label="Progress bar along the bottom" value={form.progressBar} onChange={(progressBar) => update({ progressBar })} labelPosition="start" labelSpacing="spread" width="100%" />
             </VStack>
           </Collapsible>

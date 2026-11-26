@@ -20,6 +20,8 @@ export const renderRequest = z
     effects: key,
     quality: key,
     music: key,
+    scriptEngine: key,
+    ttsEngine: key,
     imageEngine: key,
     videoEngine: key,
     progressBar: z.boolean(),
@@ -39,5 +41,12 @@ export const settings = z.object({
     .trim()
     .max(500)
     .refine((v) => v === "" || v.startsWith("/") || v.startsWith("~"), "Give the full path, starting with / or ~"),
+  /** Left out: the saved key stays as it is. Empty: the saved key is forgotten. */
+  geminiKey: z
+    .string()
+    .trim()
+    .max(200)
+    .regex(/^[\w-]*$/, "A Gemini API key has only letters, digits, - and _")
+    .optional(),
 });
 export type Settings = z.infer<typeof settings>;

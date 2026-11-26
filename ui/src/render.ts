@@ -26,6 +26,8 @@ export function buildArgs(req: RenderRequest, outputPath: string) {
     `--effects=${req.effects}`,
     `--quality=${req.quality}`,
     `--music=${req.music}`,
+    `--script-engine=${req.scriptEngine}`,
+    `--tts-engine=${req.ttsEngine}`,
     `--engine=${req.imageEngine}`,
     `--video-engine=${req.videoEngine}`,
     ...(req.progressBar ? [] : ["--no-progress-bar"]),

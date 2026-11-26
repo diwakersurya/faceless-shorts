@@ -254,15 +254,23 @@ const server = Bun.serve({
       }),
     },
     "/api/settings": {
-      // Where FastMetal is installed is a fact about this computer, so the Python tool keeps it
-      // (in its own settings file): the command line and every copy of this app then agree.
+      // Where FastMetal is installed and the Gemini key are facts about this computer, so the Python tool
+      // keeps them (in its own settings file): the command line and every copy of this app then agree.
       PUT: api(async (req) => {
-        const { fastmetalHome } = await body(req, settingsSchema);
-        const proc = Bun.spawn([cfg.python, "-m", "faceless_shorts", "config", `--fastmetal-home=${fastmetalHome}`], { cwd: REPO, env: pythonEnv(), stdout: "ignore", stderr: "pipe" });
+        const { fastmetalHome, geminiKey } = await body(req, settingsSchema);
+        // The key goes in on standard input, never on the command line, where other programs could read it.
+        const keyArgs = geminiKey === undefined ? [] : ["--gemini-key=-"];
+        const proc = Bun.spawn([cfg.python, "-m", "faceless_shorts", "config", `--fastmetal-home=${fastmetalHome}`, ...keyArgs], {
+          cwd: REPO,
+          env: pythonEnv(),
+          stdin: geminiKey === undefined ? "ignore" : new Blob([geminiKey + "\n"]),
+          stdout: "ignore",
+          stderr: "pipe",
+        });
         const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
-        if (code !== 0) throw fail(400, lastLine(stderr) || "The folder could not be saved.");
-        choices = null; // whether FastMetal is found depends on this folder
-        return json({ fastmetalHome });
+        if (code !== 0) throw fail(400, lastLine(stderr) || "The settings could not be saved.");
+        choices = null; // which engines can be used depends on these
+        return json({ fastmetalHome }); // the key is never sent back
       }),
     },
     "/api/job": {
