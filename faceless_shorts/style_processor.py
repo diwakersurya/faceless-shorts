@@ -28,10 +28,13 @@ Public API::
     StyleProcessor.apply(src, dst, "blueprint")   # -> dst path
 """
 
+from __future__ import annotations
+
 import math
 import os
 import random
 from collections.abc import Callable
+from typing import Optional
 
 from PIL import (
     Image,
@@ -533,7 +536,7 @@ class StyleProcessor:
         return DESCRIPTIONS.get(op, "")
 
     @staticmethod
-    def apply(image_path: str, output_path: str, op: str, params: dict | None = None) -> str:
+    def apply(image_path: str, output_path: str, op: str, params: Optional[dict] = None) -> str:
         """Load image, apply op, save to output_path (create dirs), return output_path.
 
         Any input mode is normalized to RGB. An unknown ``op`` never raises:

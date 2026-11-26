@@ -17,6 +17,23 @@ from faceless_shorts.tts_engine import WordTimestamp
 HAS_FFMPEG = bool(shutil.which("ffmpeg"))
 
 
+def _ffmpeg_has_filter(filter_name: str) -> bool:
+    if not HAS_FFMPEG:
+        return False
+    try:
+        res = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True, timeout=5)
+        for line in res.stdout.splitlines():
+            parts = line.strip().split()
+            if len(parts) >= 2 and parts[1] == filter_name:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+HAS_LIBASS = _ffmpeg_has_filter("ass")
+
+
 def run_ffmpeg(args, timeout=60):
     cmd = ["ffmpeg", "-hide_banner", "-v", "error", "-y", *args]
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -112,7 +129,7 @@ class TestTransitions(unittest.TestCase):
             self.assertTrue(t["name"] and t["description"], key)
 
 
-@unittest.skipUnless(HAS_FFMPEG, "ffmpeg not installed")
+@unittest.skipUnless(HAS_FFMPEG and HAS_LIBASS, "ffmpeg with libass not installed")
 class TestSubtitleStyles(unittest.TestCase):
     """Every subtitle style must generate a valid ASS file burnable by libass."""
 

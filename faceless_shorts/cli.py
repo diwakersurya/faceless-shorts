@@ -382,14 +382,16 @@ def run_doctor():
     table.add_column("Notes")
 
     import shutil as _shutil
-    ffmpeg = _shutil.which("ffmpeg")
-    if ffmpeg:
+    from faceless_shorts.renderer import VideoRenderer
+    ffmpeg_bin, has_ass = VideoRenderer._find_ffmpeg()
+    if _shutil.which(ffmpeg_bin) or os.path.isfile(ffmpeg_bin):
         try:
-            out = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=10)
+            out = subprocess.run([ffmpeg_bin, "-version"], capture_output=True, text=True, timeout=10)
             version = out.stdout.splitlines()[0].split(" ")[2] if out.stdout else "?"
         except Exception:
             version = "?"
-        table.add_row("ffmpeg", f"[green]✓ v{version}[/green]", "Render core (Ken Burns, xfade, Post-FX, libass)")
+        ass_status = "libass" if has_ass else "no libass; run: brew install ffmpeg-full"
+        table.add_row("ffmpeg", f"[green]✓ v{version}[/green]", f"Render core (Ken Burns, xfade, Post-FX, {ass_status})")
     else:
         table.add_row("ffmpeg", "[red]✗ missing[/red]", "brew install ffmpeg-full")
 

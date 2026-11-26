@@ -128,6 +128,42 @@ class VideoRenderer:
         )
         self.audio = SoundEngine()
         self.vfx_mgr = VFXManager(work_dir=work_dir)
+        self.ffmpeg_bin, self.has_ass_filter = self._find_ffmpeg()
+
+    @staticmethod
+    def _check_ffmpeg_has_filter(exe: str, filter_name: str) -> bool:
+        if not exe:
+            return False
+        try:
+            res = subprocess.run(
+                [exe, "-hide_banner", "-filters"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            blob = (res.stdout or "") + (res.stderr or "")
+            for line in blob.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] == filter_name:
+                    return True
+            return False
+        except Exception:
+            return False
+
+    @classmethod
+    def _find_ffmpeg(cls) -> Tuple[str, bool]:
+        """Find the best ffmpeg binary and report whether it supports the 'ass' filter."""
+        standard = shutil.which("ffmpeg") or "ffmpeg"
+        for candidate in [
+            "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg",
+            "/usr/local/opt/ffmpeg-full/bin/ffmpeg",
+            standard,
+        ]:
+            if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                if cls._check_ffmpeg_has_filter(candidate, "ass"):
+                    return candidate, True
+        has_ass = cls._check_ffmpeg_has_filter(standard, "ass")
+        return standard, has_ass
 
     def _map_words_to_scenes(
         self,
@@ -186,7 +222,7 @@ class VideoRenderer:
                 f.write(f"file '{os.path.abspath(v_file)}'\n")
 
         subprocess.run([
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            self.ffmpeg_bin, "-y", "-f", "concat", "-safe", "0",
             "-i", video_concat_list,
             "-c", "copy",
             output_path
@@ -455,7 +491,13 @@ class VideoRenderer:
             height=self.height,
         )
 
-        burn_filters = [f"ass={ass_path}"]
+        burn_filters = []
+        if self.has_ass_filter:
+            burn_filters.append(f"ass={ass_path}")
+        else:
+            print("    [!] Warning: Installed FFmpeg lacks 'libass' (ass filter). Video will render without burned subtitles.")
+            print("        To enable styled ASS subtitles on macOS: brew install ffmpeg-full")
+
         if self.progress_bar:
             bar_color = PROGRESS_BAR_CONFIG["colors_by_style"].get(
                 self.subtitle_style,
@@ -475,7 +517,7 @@ class VideoRenderer:
         filter_complex = f"{fx_body};[fx]{video_filters}[vout]"
 
         final_cmd = [
-            "ffmpeg", "-y",
+            self.ffmpeg_bin, "-y",
             "-i", raw_video_path,
             "-i", master_audio_path,
             "-filter_complex", filter_complex,
@@ -497,7 +539,10 @@ class VideoRenderer:
             output_mp4_path
         ]
 
-        subprocess.run(final_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.run(final_cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            err_tail = "\n".join(proc.stderr.strip().splitlines()[-10:]) if proc.stderr else "Unknown error"
+            raise RuntimeError(f"FFmpeg final assembly failed (code {proc.returncode}):\n{err_tail}")
         elapsed = time.time() - start_time
         print(f"\n✨ Video successfully rendered in {elapsed:.1f}s!")
         print(f"📦 Output path: {output_mp4_path}")
