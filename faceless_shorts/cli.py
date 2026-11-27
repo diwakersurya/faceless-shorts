@@ -34,7 +34,11 @@ from faceless_shorts.config import (
     DEFAULT_TTS_ENGINE,
     GEMINI_VOICES,
     DEFAULT_GEMINI_VOICE,
+    MODEL_KINDS,
+    PHOTO_IMAGE_ENGINES,
+    PHOTO_VIDEO_ENGINES,
 )
+from faceless_shorts import my_models
 from faceless_shorts.postfx import PostFX
 from faceless_shorts.vfx import VFX_PRESETS
 from faceless_shorts.style_processor import StyleProcessor
@@ -301,6 +305,12 @@ def run_generate(args):
     elif chosen_voice == "christopher" and lang != "en" and lang in LANGUAGES:
         chosen_voice = LANGUAGES[lang]["default_voice"]
 
+    try:
+        featuring = my_models.resolve((args.featuring or "").split(","))
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(2)
+
     # Optional: Save preset to presets/ folder
     if args.save_preset:
         preset_out = os.path.join("presets", f"{script.niche}_{lang}.json")
@@ -330,6 +340,7 @@ def run_generate(args):
         f"[bold white]Script Writer:[/bold white] {'Ready-made script' if not args.topic or args.niche or args.script_json else SCRIPT_ENGINES.get(args.script_engine, args.script_engine)}\n"
         f"[bold white]Image Engine:[/bold white] {'Procedural (offline)' if args.offline else IMAGE_ENGINES.get(args.engine, args.engine)}\n"
         f"[bold white]Scene Video:[/bold white] {VIDEO_ENGINES.get(args.video_engine, args.video_engine)}\n"
+        f"[bold white]Featuring:[/bold white] {', '.join(f'{m.name} ({m.kind})' for m in featuring) or 'none of your models'}\n"
         f"[bold white]Audio:[/bold white] {'Clean Studio Voice (Zero Background Sound)' if (not args.music or args.music == 'none') else f'{args.music} (Ducked, -14 LUFS)'}",
         title="🎬 Production Brief",
         border_style="green"
@@ -356,6 +367,7 @@ def run_generate(args):
         encoder_preset=args.encoder_preset,
         video_engine=args.video_engine,
         tts_engine=args.tts_engine,
+        featuring=featuring,
     )
 
     rendered_file = renderer.render(
@@ -399,9 +411,10 @@ def print_options():
         "gemini": engine_fixes["gemini"],
     }
 
-    def choices(engines, fixes):
+    def choices(engines, fixes, photos=frozenset()):
         # "Name (what it is)" becomes a short label and a description, so four lists fit side by side on a page.
         # An engine that cannot run here stays in the list: its description then says what it needs.
+        # usesPhoto: the engine looks at your models' photos (the others get their descriptions as words).
         def one(key, text):
             name, _, about = text.partition(" (")
             return {
@@ -409,6 +422,7 @@ def print_options():
                 "label": name,
                 "description": fixes.get(key) or about.rstrip(")") or None,
                 "available": fixes.get(key) is None,
+                "usesPhoto": key in photos,
             }
         return [one(key, text) for key, text in engines.items()]
     options = {
@@ -438,8 +452,16 @@ def print_options():
         "music": ["none", "dark_tension", "curiosity_ambient", "cinematic_pulse", "sub_bass_808"],
         "scriptEngines": choices(SCRIPT_ENGINES, engine_fixes),
         "ttsEngines": choices(TTS_ENGINES, engine_fixes),
-        "imageEngines": choices(IMAGE_ENGINES, engine_fixes),
-        "videoEngines": choices(VIDEO_ENGINES, video_fixes),
+        "imageEngines": choices(IMAGE_ENGINES, engine_fixes, PHOTO_IMAGE_ENGINES),
+        "videoEngines": choices(VIDEO_ENGINES, video_fixes, PHOTO_VIDEO_ENGINES),
+        # Your models themselves come from 'models list --json'; these are the rules for making one.
+        "myModels": {
+            "kinds": [{"value": key, "label": key.title()} for key in MODEL_KINDS],
+            "maxFeatured": my_models.MAX_FEATURED,
+            "maxName": my_models.MAX_NAME,
+            "maxDescription": my_models.MAX_DESCRIPTION,
+            "describedByGemini": gemini_key is not None,
+        },
         # The key itself never leaves this computer's settings: only whether there is one, where from, and its last 4 characters.
         "gemini": {
             "configured": gemini_key is not None,
@@ -516,6 +538,57 @@ def run_config(args):
         where = "saved in the settings file" if gemini[1] == "settings" else f"from {gemini[1]} in this shell"
         print(f"Gemini: key ending in {gemini[0][-4:]}, {where}. {GeminiClient.check_key(gemini[0])[1]}")
         print("  Scripts and the voice-over work within Google's free limits; images and video need billing set up on the key.")
+
+
+def run_models(args):
+    """List, add, edit or remove your models. A refusal (bad photo, name taken...) is one line on stderr and exit 1."""
+    import contextlib
+
+    # With --json, standard output carries only the JSON: what the work prints on the way goes to stderr.
+    quiet = contextlib.redirect_stdout(sys.stderr) if args.json else contextlib.nullcontext()
+    try:
+        with quiet:
+            changed = _change_models(args)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        sys.exit(1)
+    _report_models(args, changed)
+
+
+def _change_models(args):
+    if args.models_command == "add":
+        return my_models.add(args.name, args.kind, args.image, args.description)
+    if args.models_command == "edit":
+        return my_models.edit(args.model, name=args.name, kind=args.kind, description=args.description)
+    if args.models_command == "remove":
+        return my_models.remove(args.model)
+    return None
+
+
+def _report_models(args, changed):
+    if args.json:
+        result = {"folder": my_models.library_dir(), "models": [m.to_json() for m in my_models.all_models()]}
+        if changed is not None:
+            result["changed"] = changed.to_json()
+        print(json.dumps(result, ensure_ascii=False))
+        return
+    if changed is not None:
+        verb = {"add": "Added", "edit": "Saved", "remove": "Removed"}[args.models_command]
+        console.print(f"[green]{verb} {changed.name} ({changed.kind}).[/green]")
+        if args.models_command == "add" and not changed.description:
+            console.print("[yellow]It has no description, so engines that cannot see the photo only know it is "
+                          f"{MODEL_KINDS[changed.kind]}. Add one with: models edit {changed.id} --description \"...\"[/yellow]")
+        return
+    models = my_models.all_models()
+    if not models:
+        console.print(f"No models yet. Make one with: python -m faceless_shorts models add --name Ravi --kind man --image photo.jpg")
+        return
+    table = Table(title=f"Your models ({my_models.library_dir()})")
+    for column in ("Name", "Id", "Kind", "Description"):
+        table.add_column(column)
+    for m in models:
+        table.add_row(m.name, m.id, m.kind, m.description or "[dim]none[/dim]")
+    console.print(table)
 
 
 def run_doctor():
@@ -636,6 +709,7 @@ def main():
     gen_parser.add_argument("--tts-engine", type=str, default=DEFAULT_TTS_ENGINE, choices=list(TTS_ENGINES.keys()), help="Who speaks the voice-over: 'edge' is Microsoft Edge-TTS (free, no key); 'gemini' is Google's speech model (online, needs a key). With gemini, --voice takes a Gemini voice such as Charon, Kore or Puck")
     gen_parser.add_argument("--engine", type=str, default=DEFAULT_IMAGE_ENGINE, choices=list(IMAGE_ENGINES.keys()), help="Image generation engine: pollinations, comfyui, a local model (flux2-klein, z-image-turbo), gemini (online, paid per image) or procedural")
     gen_parser.add_argument("--video-engine", type=str, default=DEFAULT_VIDEO_ENGINE, choices=list(VIDEO_ENGINES.keys()), help="Scene video engine: a real-motion clip per scene instead of Ken Burns motion on a still image. 'stickman' draws animated stick figures by code (instant, free, offline); 'fastmetal' is a local model (Apple Silicon, minutes per scene); 'gemini' is Google's online model (paid per second of video)")
+    gen_parser.add_argument("--featuring", type=str, default="", help=f"Your models to put in every scene, by name or id, comma-separated (at most {my_models.MAX_FEATURED}; see 'models list'). Gemini and flux2-klein images use their photos, stickman draws their faces, other engines get their descriptions")
     gen_parser.add_argument("-o", "--output", type=str, help="Output MP4 file path")
     gen_parser.add_argument("--script-json", type=str, help="Path to custom JSON script file")
     gen_parser.add_argument("--images-dir", type=str, help="Path to folder containing scene_01.jpg, scene_02.jpg, etc.")
@@ -660,6 +734,25 @@ def main():
     cfg_parser = subparsers.add_parser("config", help="Show or change the settings kept for this computer (where FastMetal is installed, the Gemini API key)")
     cfg_parser.add_argument("--gemini-key", type=str, default=None, help="Gemini API key from aistudio.google.com/apikey. Pass - to type or pipe it in instead of putting it on the command line; an empty string forgets it")
     cfg_parser.add_argument("--fastmetal-home", type=str, default=None, help="Folder that holds FastVideo/ and FastMetal-1.3B-QAD/ (pass an empty string to forget it)")
+
+    # your models: a person or object from a photo, kept on this computer
+    models_parser = subparsers.add_parser("models", help="Your models: a person or object made from a photo, to feature in shorts (list, add, edit, remove)")
+    models_sub = models_parser.add_subparsers(dest="models_command")
+    m_list = models_sub.add_parser("list", help="List your models")
+    m_add = models_sub.add_parser("add", help="Make a model from a photo")
+    m_add.add_argument("--name", required=True, help="What you call it, e.g. Ravi or Red bike")
+    m_add.add_argument("--kind", required=True, choices=list(MODEL_KINDS), help="What it is")
+    m_add.add_argument("--image", required=True, help="The photo: one person or one object, clearly visible (JPEG, PNG or WebP)")
+    m_add.add_argument("--description", default="", help="How it looks, for engines that cannot see the photo. Left out: Gemini writes it from the photo when a key is saved")
+    m_edit = models_sub.add_parser("edit", help="Rename a model, or change its kind or description")
+    m_edit.add_argument("model", help="The model's name or id")
+    m_edit.add_argument("--name", default=None)
+    m_edit.add_argument("--kind", default=None, choices=list(MODEL_KINDS))
+    m_edit.add_argument("--description", default=None)
+    m_remove = models_sub.add_parser("remove", help="Delete a model and its photo")
+    m_remove.add_argument("model", help="The model's name or id")
+    for sub in (m_list, m_add, m_edit, m_remove):
+        sub.add_argument("--json", action="store_true", help="Print the result as JSON (used by the web UI)")
 
     # transcribe command (local Whisper via FFmpeg)
     tr_parser = subparsers.add_parser("transcribe", help="Transcribe any audio/video to SRT using local Whisper (FFmpeg built-in, 100%% offline)")
@@ -702,6 +795,11 @@ def main():
         run_config(args)
     elif args.command == "transcribe":
         run_transcribe(args)
+    elif args.command == "models":
+        if not args.models_command:
+            models_parser.print_help()
+        else:
+            run_models(args)
     else:
         print_banner()
         parser.print_help()

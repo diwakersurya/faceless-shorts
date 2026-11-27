@@ -4,10 +4,12 @@ import { IconButton } from "@astryxdesign/core/IconButton";
 import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav";
 import { VStack } from "@astryxdesign/core/VStack";
 import * as stylex from "@stylexjs/stylex";
-import { Clapperboard, Settings } from "lucide-react";
+import { Clapperboard, Settings, Users } from "lucide-react";
 import { useState } from "react";
 import { GenerateForm } from "./components/GenerateForm";
+import { HStack } from "@astryxdesign/core/HStack";
 import { Library } from "./components/Library";
+import { ModelsDialog } from "./components/ModelsDialog";
 import { RenderProgress } from "./components/RenderProgress";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ToastBridge } from "./components/ToastBridge";
@@ -35,6 +37,7 @@ export function App() {
   const job = useJob().data?.job ?? null;
   const videos = useVideos().data?.videos;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [modelsOpen, setModelsOpen] = useState(false);
   return (
     <AppShell
       height="fill"
@@ -42,13 +45,18 @@ export function App() {
       topNav={
         <TopNav
           heading={<TopNavHeading heading="Faceless Shorts" logo={<Clapperboard size={20} />} />}
-          endContent={<IconButton label="Settings" tooltip="Settings" icon={<Settings size={18} />} variant="ghost" isDisabled={!options.data} onClick={() => setSettingsOpen(true)} />}
+          endContent={
+            <HStack gap={1}>
+              <IconButton label="Your models" tooltip="Your models" icon={<Users size={18} />} variant="ghost" isDisabled={!options.data} onClick={() => setModelsOpen(true)} />
+              <IconButton label="Settings" tooltip="Settings" icon={<Settings size={18} />} variant="ghost" isDisabled={!options.data} onClick={() => setSettingsOpen(true)} />
+            </HStack>
+          }
         />
       }
       banner={options.isError ? <Banner status="error" container="section" title="The app is not ready to make shorts" description={options.error.message} /> : undefined}
     >
       <div {...stylex.props(s.page)}>
-        <GenerateForm options={options.data} busy={job?.state === "running"} onSettings={() => setSettingsOpen(true)} />
+        <GenerateForm options={options.data} busy={job?.state === "running"} onSettings={() => setSettingsOpen(true)} onModels={() => setModelsOpen(true)} />
         <VStack gap={5}>
           {job && <RenderProgress job={job} />}
           <Library videos={videos} />
@@ -56,6 +64,7 @@ export function App() {
       </div>
       {route.video && <VideoDialog name={route.video} videos={videos} />}
       {settingsOpen && options.data && <SettingsDialog options={options.data} onClose={() => setSettingsOpen(false)} />}
+      {modelsOpen && options.data && <ModelsDialog options={options.data} onClose={() => setModelsOpen(false)} />}
       <ToastBridge />
     </AppShell>
   );

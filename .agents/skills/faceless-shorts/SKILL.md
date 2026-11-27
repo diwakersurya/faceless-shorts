@@ -101,6 +101,7 @@ All optional, auto-detected, graceful degradation (never break the core pipeline
 * **Option C (Local ComfyUI)**: `--engine comfyui` when ComfyUI runs on :8188.
 * **Option D (Offline)**: `--offline` → procedural Pillow canvases (zero network).
 * **Option E (Stick figures)**: `--video-engine stickman` → every scene is an animated stick-figure clip drawn by code (instant, offline). Give each scene a `stick` storyboard in the script JSON, e.g. `{"action": "think", "other": "angry", "bubble": "?", "headline": "Ask one question"}`; actions: `stand`, `talk`, `point`, `angry`, `think`, `shrug`, `celebrate`, `slump`, `recoil`, `wave`, `walk`, `run`, `lift`, `meditate`. Without one the action comes from keywords in the scene text.
+* **Option F (Your models)**: `models add --name Ravi --kind man --image photo.jpg`, then `generate --featuring ravi`. FLUX.2 klein and Gemini images use the photo, stick figures wear the face, other engines get the model's description. A scene can set its own `"featuring": [...]`.
 
 ### Step 4: Execute the Python CLI
 

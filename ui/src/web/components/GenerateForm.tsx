@@ -2,7 +2,9 @@ import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
 import { Collapsible } from "@astryxdesign/core/Collapsible";
 import { Grid } from "@astryxdesign/core/Grid";
+import { HStack } from "@astryxdesign/core/HStack";
 import { Heading } from "@astryxdesign/core/Heading";
+import { MultiSelector } from "@astryxdesign/core/MultiSelector";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Skeleton } from "@astryxdesign/core/Skeleton";
@@ -10,11 +12,11 @@ import { Switch } from "@astryxdesign/core/Switch";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { VStack } from "@astryxdesign/core/VStack";
-import { Sparkles } from "lucide-react";
+import { Sparkles, UserPlus } from "lucide-react";
 import { useState } from "react";
 import { type RenderRequest, renderRequest } from "../../shared/schema";
-import type { Choice, Engine, Options } from "../api";
-import { useStartRender } from "../queries";
+import type { Choice, Engine, MyModel, Options } from "../api";
+import { useMyModels, useStartRender } from "../queries";
 
 const STORE = "faceless-shorts-ui.form";
 const FORM_HEIGHT = 560; // the loading placeholder takes the room the form will take
@@ -55,6 +57,8 @@ function initial(options: Options): RenderRequest {
     ttsEngine,
     imageEngine: usable(last.imageEngine, options.imageEngines, d.imageEngine),
     videoEngine: usable(last.videoEngine, options.videoEngines, d.videoEngine),
+    // Checked against your models when the form is shown: one may have been deleted since.
+    featuring: Array.isArray(last.featuring) ? last.featuring.filter((id): id is string => typeof id === "string") : [],
     progressBar: typeof last.progressBar === "boolean" ? last.progressBar : true,
   };
 }
@@ -64,17 +68,85 @@ const engineChoices = (list: Engine[]) => list.map((e) => ({ value: e.value, lab
 
 const words = (key: string) => key.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
 
-type Props = { options: Options; busy: boolean; onSettings: () => void };
+/** How the chosen engines will show your models: from their photos, or only from their descriptions. */
+function featuringNote(options: Options, form: RenderRequest, chosen: MyModel[]) {
+  const image = options.imageEngines.find((e) => e.value === form.imageEngine);
+  const video = options.videoEngines.find((e) => e.value === form.videoEngine);
+  const seeing = options.imageEngines.filter((e) => e.usesPhoto && e.available).map((e) => e.label).join(" or ");
+  const better = seeing ? ` For their likeness, choose ${seeing} for Images.` : "";
+  if (form.videoEngine === "stickman") {
+    const person = chosen.some((m) => m.kind !== "object");
+    const thing = chosen.some((m) => m.kind === "object");
+    return [person && "The stick figures wear their faces.", thing && "An object stands beside the figures as a picture."].filter(Boolean).join(" ");
+  }
+  if (video?.usesPhoto)
+    return image?.usesPhoto
+      ? `Each clip opens on a picture of them that ${image.label} draws from their photos.`
+      : `Each clip opens on a picture by ${image?.label}, which cannot see photos and draws them from their descriptions.${better}`;
+  if (form.videoEngine !== "none") return `${video?.label} cannot see photos: it draws them from their descriptions.`;
+  return image?.usesPhoto ? `${image.label} draws them from their photos.` : `${image?.label} cannot see photos: it draws them from their descriptions.${better}`;
+}
 
-function Form({ options, busy, onSettings }: Props) {
+type FeaturingProps = { options: Options; form: RenderRequest; chosen: string[]; onChange: (featuring: string[]) => void; onModels: () => void };
+
+/** Your models to put in every scene, or the way to make the first one. */
+function Featuring({ options, form, chosen, onChange, onModels }: FeaturingProps) {
+  const models = useMyModels();
+  const list = models.data?.models ?? [];
+  const full = chosen.length >= options.myModels.maxFeatured;
+  if (models.data && list.length === 0)
+    return (
+      <VStack gap={1}>
+        <Text weight="medium">Featuring</Text>
+        <Text size="sm" color="secondary">
+          Put a person or an object from your own photo in every scene.
+        </Text>
+        <HStack>
+          <Button label="Make a model from a photo" icon={<UserPlus size={16} />} size="sm" variant="secondary" onClick={onModels} />
+        </HStack>
+      </VStack>
+    );
+  return (
+    <VStack gap={1}>
+      <MultiSelector
+        label="Featuring"
+        isOptional
+        description={chosen.length ? featuringNote(options, form, list.filter((m) => chosen.includes(m.id))) : `Your models to put in every scene, at most ${options.myModels.maxFeatured}.`}
+        options={list.map((m) => ({
+          value: m.id,
+          label: m.name,
+          description: options.myModels.kinds.find((k) => k.value === m.kind)?.label,
+          disabled: full && !chosen.includes(m.id),
+        }))}
+        value={chosen}
+        onChange={onChange}
+        placeholder="None of your models"
+        triggerDisplay="badges"
+        hasClear
+        isLoading={models.isLoading}
+        status={models.isError ? { type: "error", message: `Your models could not be loaded: ${models.error.message}` } : undefined}
+      />
+      <HStack>
+        <Button label="Manage your models" variant="ghost" size="sm" onClick={onModels} />
+      </HStack>
+    </VStack>
+  );
+}
+
+type Props = { options: Options; busy: boolean; onSettings: () => void; onModels: () => void };
+
+function Form({ options, busy, onSettings, onModels }: Props) {
   const start = useStartRender();
+  const known = useMyModels().data?.models;
   const [form, setForm] = useState(() => initial(options));
   const update = (patch: Partial<RenderRequest>) => {
     const next = { ...form, ...patch };
     setForm(next);
     localStorage.setItem(STORE, JSON.stringify(next)); // the choices are still there after a reload
   };
-  const parsed = renderRequest.safeParse(form);
+  // A model kept from last time that has been deleted since is left out, not sent.
+  const chosen = known ? form.featuring.filter((id) => known.some((m) => m.id === id)) : [];
+  const parsed = renderRequest.safeParse({ ...form, featuring: chosen });
   // An empty topic is not shown as an error; the button simply stays off until there is one.
   const topicError = form.source === "topic" && form.topic.trim() && !parsed.success ? parsed.error.issues.find((i) => i.path[0] === "topic")?.message : undefined;
   const ready = parsed.success && !busy && !start.isPending;
@@ -109,6 +181,7 @@ function Form({ options, busy, onSettings }: Props) {
           ) : (
             <Selector label="Ready-made script" options={options.presets.map((p) => ({ value: p.value, label: p.label, description: `${p.scenes} scenes` }))} value={form.preset} onChange={set("preset")} />
           )}
+          <Featuring options={options} form={form} chosen={chosen} onChange={(featuring) => update({ featuring })} onModels={onModels} />
           <VStack gap={3}>
             <VStack gap={1}>
               <Text weight="medium">Who makes each part</Text>

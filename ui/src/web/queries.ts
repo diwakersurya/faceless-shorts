@@ -1,6 +1,6 @@
 // Every read and every change goes through here: one cache, one place for errors and refreshes.
 import { MutationCache, QueryClient, useMutation, useQuery } from "@tanstack/react-query";
-import type { RenderRequest, Settings } from "../shared/schema";
+import type { ModelFields, RenderRequest, Settings } from "../shared/schema";
 import { type Job, api } from "./api";
 import { go } from "./route";
 import { toast } from "./toast";
@@ -17,6 +17,7 @@ const TICK = 1500;
 
 export const useOptions = () => useQuery({ queryKey: ["options"], queryFn: api.options, staleTime: 30_000 });
 export const useVideos = () => useQuery({ queryKey: ["videos"], queryFn: api.videos });
+export const useMyModels = () => useQuery({ queryKey: ["models"], queryFn: api.myModels });
 
 let lastState: Job["state"] | null = null;
 /** The moment a render ends is noticed here, where the answer arrives: the list is refreshed and the person is told. */
@@ -53,6 +54,36 @@ export const useDeleteVideo = () =>
       go({ video: null });
       await queryClient.invalidateQueries({ queryKey: ["videos"] });
       toast.ok("Short deleted");
+    },
+  });
+
+// Every change answers with the whole list, so it is put straight into the cache instead of asked for again.
+const keepModels = (answer: Awaited<ReturnType<typeof api.myModels>>) => queryClient.setQueryData(["models"], answer);
+
+export const useAddModel = () =>
+  useMutation({
+    mutationFn: ({ photo, fields }: { photo: File; fields: ModelFields }) => api.addModel(photo, fields),
+    onSuccess: (answer) => {
+      keepModels(answer);
+      toast.ok(`${answer.changed?.name ?? "The model"} is ready to feature`);
+    },
+  });
+
+export const useEditModel = () =>
+  useMutation({
+    mutationFn: ({ id, fields }: { id: string; fields: ModelFields }) => api.editModel(id, fields),
+    onSuccess: (answer) => {
+      keepModels(answer);
+      toast.ok("Model saved");
+    },
+  });
+
+export const useDeleteModel = () =>
+  useMutation({
+    mutationFn: api.deleteModel,
+    onSuccess: (answer) => {
+      keepModels(answer);
+      toast.ok(`${answer.changed?.name ?? "The model"} deleted`);
     },
   });
 

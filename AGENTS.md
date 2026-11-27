@@ -34,6 +34,10 @@ python -m faceless_shorts generate --script-json presets/stoicism.json --output 
 # Real-motion AI clip per scene with a local model (Apple Silicon, minutes per scene; see README)
 python -m faceless_shorts generate --niche stoicism --video-engine fastmetal
 
+# Your models: a person or object from one photo, featured in every scene (photo used by flux2-klein/gemini images and stickman faces)
+python -m faceless_shorts models add --name Ravi --kind man --image ravi.jpg
+python -m faceless_shorts generate --niche stoicism --engine flux2-klein --featuring ravi
+
 # Stick-figure scenes drawn by code (instant, offline; a scene's "stick" storyboard in the script JSON says what to draw)
 python -m faceless_shorts generate --niche stoicism --video-engine stickman
 

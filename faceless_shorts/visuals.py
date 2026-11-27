@@ -15,7 +15,7 @@ import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 from PIL import Image, ImageDraw, ImageFilter
 
 from faceless_shorts.config import (
@@ -25,9 +25,17 @@ from faceless_shorts.config import (
     ART_STYLES,
     DEFAULT_IMAGE_ENGINE,
     MFLUX_MODELS,
+    PHOTO_IMAGE_ENGINES,
 )
+from faceless_shorts.my_models import Model, with_models
 from faceless_shorts.style_processor import StyleProcessor
 from faceless_shorts.vfx.theatre_easing import get_theatre_motion_expr
+
+
+def _file_hash(path: str) -> str:
+    """What a picture holds, for cache keys: a model whose photo is replaced must not reuse old results."""
+    with open(path, "rb") as handle:
+        return hashlib.sha1(handle.read()).hexdigest()[:16]
 
 class VisualManager:
     def __init__(
@@ -63,8 +71,10 @@ class VisualManager:
         prompt: str,
         output_path: str,
         model: str = "flux",
-        seed: Optional[int] = None
-    ) -> str:
+        seed: Optional[int] = None,
+        models: Sequence[Model] = (),
+        fallback: bool = True,
+    ) -> Optional[str]:
         """
         Generate a vertical AI image using the selected free engine:
           - pollinations: keyless cloud Flux generation
@@ -73,35 +83,46 @@ class VisualManager:
           - gemini: Google's online image model (paid per image)
           - procedural: offline Pillow canvas (zero network)
         Always degrades to the procedural canvas so rendering never fails.
+        *models*: your models the scene shows. Engines in PHOTO_IMAGE_ENGINES get their photos; the
+        others (and every fallback) get them described in the prompt.
+        fallback=False: None when the chosen engine fails, instead of another engine's picture or the plain canvas.
         """
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         chosen_seed = seed if seed is not None else random.randint(1000, 999999)
+        photos = [m.photo for m in models] if self.engine in PHOTO_IMAGE_ENGINES else []
+        photo_prompt = with_models(prompt, models, photos=True) if photos else prompt
+        prompt = with_models(prompt, models, photos=False)  # what every engine without the photos gets
 
         if self.engine in MFLUX_MODELS:
             from faceless_shorts.integrations import MfluxClient
             style_config = ART_STYLES.get(self.art_style, ART_STYLES["hyperreal"])
             path = MfluxClient(self.engine).generate(
-                prompt=f"{prompt}, {style_config['prompt_suffix']}",
+                prompt=f"{photo_prompt if photos else prompt}, {style_config['prompt_suffix']}",
                 output_path=output_path,
                 seed=chosen_seed,
                 portrait=self.height >= self.width,
+                refs=photos,
             )
             if path:
                 return path
+            if not fallback:
+                return None
             print("    [!] Local image model unavailable, falling back to Pollinations Flux.")
 
         if self.engine == "gemini":
             from faceless_shorts.integrations import GeminiClient
             client = GeminiClient()
             style_config = ART_STYLES.get(self.art_style, ART_STYLES["hyperreal"])
-            full_prompt = f"{prompt}, {style_config['prompt_suffix']}"
+            full_prompt = f"{photo_prompt if photos else prompt}, {style_config['prompt_suffix']}"
             portrait = self.height >= self.width
             # Every image is paid for, so it is kept by what produced it and reused on the next render.
-            key = "|".join([full_prompt, client.model("image"), str(portrait)])
+            key = "|".join([full_prompt, client.model("image"), str(portrait), *map(_file_hash, photos)])
             cached = os.path.join(self.cache_dir, f"gemini_{hashlib.sha1(key.encode()).hexdigest()[:16]}.jpg")
-            if os.path.exists(cached) or client.generate_image(full_prompt, cached, portrait=portrait):
+            if os.path.exists(cached) or client.generate_image(full_prompt, cached, portrait=portrait, refs=photos):
                 shutil.copyfile(cached, output_path)
                 return output_path
+            if not fallback:
+                return None
             print("    [!] Gemini image unavailable, falling back to Pollinations Flux.")
 
         if self.engine == "comfyui":
@@ -122,6 +143,8 @@ class VisualManager:
                 print("    [!] ComfyUI unavailable, falling back to Pollinations Flux.")
             except Exception as e:
                 print(f"    [!] ComfyUI engine failed ({e}), falling back to Pollinations Flux.")
+            if not fallback:
+                return None
 
         if self.engine != "procedural":
             style_config = ART_STYLES.get(self.art_style, ART_STYLES["hyperreal"])
@@ -147,7 +170,7 @@ class VisualManager:
                     if attempt == max_retries - 1:
                         print(f"    [!] Warning: Visual generation failed ({e}). Using sleek procedural canvas.")
 
-        return self.generate_procedural_background(output_path, prompt)
+        return self.generate_procedural_background(output_path, prompt) if fallback else None
 
     def generate_ai_images_parallel(
         self,
@@ -162,7 +185,7 @@ class VisualManager:
         def _one(job: Dict) -> Dict[str, str]:
             try:
                 return {job["output_path"]: self.generate_ai_image(
-                    prompt=job["prompt"], output_path=job["output_path"])}
+                    prompt=job["prompt"], output_path=job["output_path"], models=job.get("models", ()))}
             except Exception:
                 return {job["output_path"]: self.generate_procedural_background(
                     output_path=job["output_path"], topic=job.get("prompt", ""))}
@@ -243,13 +266,16 @@ class VisualManager:
         fps: Optional[int] = None,
         width: Optional[int] = None,
         height: Optional[int] = None,
-        engine: str = "fastmetal"
+        engine: str = "fastmetal",
+        models: Sequence[Model] = (),
+        start_image: Optional[str] = None,
     ) -> Optional[str]:
         """
         Generate a real-motion scene clip with a video model (*engine*: the local FastMetal
         model, or "gemini" for Google's online one) and fit it to the canvas, frame rate and
         scene duration. Returns None on any failure so the caller can fall back to the
-        image + Ken Burns path.
+        image + Ken Burns path. *models*: your models the scene shows, described in the prompt;
+        *start_image* (Gemini only): the picture the clip opens on, which already shows them.
         """
         from faceless_shorts.integrations import FastMetalClient, FASTMETAL_FPS, GeminiClient
 
@@ -257,6 +283,11 @@ class VisualManager:
         width = width or self.width
         height = height or self.height
         style_config = ART_STYLES.get(self.art_style, ART_STYLES["hyperreal"])
+        start_image = start_image if engine == "gemini" and start_image and os.path.exists(start_image) else None
+        if start_image:
+            prompt = f"Bring this opening frame to life: {prompt}. Everyone and everything in the frame keeps exactly the same look"
+        else:
+            prompt = with_models(prompt, models, photos=False)
         full_prompt = f"{prompt}, {style_config['prompt_suffix']}"
         portrait = height >= width
 
@@ -264,7 +295,8 @@ class VisualManager:
             client = GeminiClient()
             full_prompt += ". No captions or text on screen."  # the subtitles are added later, by this tool
             clip_seconds = float(client.seconds_for(duration))
-            made_by = [str(clip_seconds), str(portrait), client.model("video"), client.video_resolution()]
+            made_by = [str(clip_seconds), str(portrait), client.model("video"), client.video_resolution(),
+                       *([_file_hash(start_image)] if start_image else [])]
         else:
             client = FastMetalClient()
             frames = FastMetalClient.frames_for(duration)
@@ -275,7 +307,8 @@ class VisualManager:
         key = "|".join([full_prompt, *made_by])
         raw_path = os.path.join(self.cache_dir, f"{engine}_{hashlib.sha1(key.encode()).hexdigest()[:16]}.mp4")
         if not os.path.exists(raw_path):
-            if not client.generate(full_prompt, raw_path, duration, portrait=portrait):
+            opening = {"start_image": start_image} if start_image else {}
+            if not client.generate(full_prompt, raw_path, duration, portrait=portrait, **opening):
                 return None
 
         # A scene longer than the model's longest clip (~5 s FastMetal, 15 s Gemini) is slowed down to fill it.

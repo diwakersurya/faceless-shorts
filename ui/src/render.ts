@@ -30,6 +30,7 @@ export function buildArgs(req: RenderRequest, outputPath: string) {
     `--tts-engine=${req.ttsEngine}`,
     `--engine=${req.imageEngine}`,
     `--video-engine=${req.videoEngine}`,
+    ...(req.featuring.length ? [`--featuring=${req.featuring.join(",")}`] : []),
     ...(req.progressBar ? [] : ["--no-progress-bar"]),
     `--output=${outputPath}`,
   ];

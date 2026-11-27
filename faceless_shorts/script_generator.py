@@ -19,6 +19,8 @@ class Scene:
     duration_estimate: float = 5.0
     # What --video-engine stickman draws for this scene (see stickman.py); None picks it from the text.
     stick: Optional[Dict] = None
+    # Your models in this scene, by id or name (my_models.py). None: the ones the short features; []: none.
+    featuring: Optional[List[str]] = None
 
 @dataclass
 class VideoScript:

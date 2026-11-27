@@ -3,6 +3,9 @@ import { z } from "zod";
 /** A choice as the Python tool names it (a voice, a style, a preset...). */
 const key = z.string().regex(/^[\w-]{1,60}$/);
 
+/** One of your models, as the Python tool names its folder. */
+export const modelId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/);
+
 /** The five steps the Python tool reports as "[n/5]". */
 export const STAGES = ["Voiceover", "Visuals", "Subtitles", "Audio", "Final assembly"] as const;
 
@@ -24,6 +27,8 @@ export const renderRequest = z
     ttsEngine: key,
     imageEngine: key,
     videoEngine: key,
+    /** Your models in every scene (the Python tool says how many a short may have). */
+    featuring: z.array(modelId).max(10),
     progressBar: z.boolean(),
   })
   .superRefine((r, ctx) => {
@@ -34,6 +39,17 @@ export type RenderRequest = z.infer<typeof renderRequest>;
 
 /** A finished video's file name. It comes from the address bar and from requests, so it is always checked. */
 export const videoName = z.string().regex(/^[\w-]{1,120}\.mp4$/);
+
+/** A model's name, kind and description. The limits come from the Python tool (options.myModels), which checks them again. */
+export const modelFields = (limits: { maxName: number; maxDescription: number }) =>
+  z.object({
+    name: z.string().trim().min(1, "Give the model a name").max(limits.maxName, `At most ${limits.maxName} characters`),
+    kind: key,
+    description: z.string().trim().max(limits.maxDescription, `At most ${limits.maxDescription} characters`),
+  });
+export type ModelFields = z.infer<ReturnType<typeof modelFields>>;
+/** What the server accepts before the Python tool applies the exact limits. */
+export const anyModelFields = modelFields({ maxName: 100, maxDescription: 1000 });
 
 export const settings = z.object({
   fastmetalHome: z

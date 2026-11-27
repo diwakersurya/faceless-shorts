@@ -2,10 +2,11 @@
 // The web app's server: serves the page, and runs the Python tool for it one render at a time.
 import { existsSync } from "node:fs";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { allowed } from "./access";
 import { type Progress, START, buildArgs, failureReason, outputName, parseLine } from "./render";
-import { type RenderRequest, renderRequest, settings as settingsSchema, videoName } from "./shared/schema";
+import { type RenderRequest, anyModelFields, modelId, renderRequest, settings as settingsSchema, videoName } from "./shared/schema";
 import app from "./web/index.html";
 
 const UI = resolve(import.meta.dir, "..");
@@ -217,6 +218,57 @@ function videoPath(name: string | undefined) {
   return path;
 }
 
+// ------------------------------------------------------------- your models
+// The Python tool keeps them (photos of people, outside the repository) and checks every change; this only passes them on.
+type MyModel = { id: string; name: string; kind: string; description: string; created: number };
+let modelsFolder: string | null = null; // where the photos are, learned from the first answer
+const PHOTO_TYPES: Record<string, string> = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp" };
+const MAX_PHOTO = 20_000_000;
+
+async function myModels(args: string[] = ["list"]) {
+  const proc = Bun.spawn([cfg.python, "-m", "faceless_shorts", "models", ...args, "--json"], { cwd: REPO, env: pythonEnv(), stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  // A refusal (photo not readable, name taken...) is the last line the tool printed, written for a person.
+  if (code !== 0) throw fail(400, lastLine(stderr) || "The model could not be saved.");
+  const answer = JSON.parse(stdout) as { folder: string; models: MyModel[]; changed?: MyModel };
+  modelsFolder = answer.folder;
+  return answer;
+}
+
+const fieldArgs = (f: { name: string; kind: string; description: string }) => [`--name=${f.name}`, `--kind=${f.kind}`, `--description=${f.description}`];
+
+async function addModel(req: Req) {
+  const form = await req.formData().catch(() => null);
+  const photo = form?.get("photo");
+  if (!(photo instanceof File) || photo.size === 0) throw fail(400, "Choose a photo.");
+  const ext = PHOTO_TYPES[photo.type];
+  if (!ext) throw fail(400, "Use a JPEG, PNG or WebP photo. (An iPhone HEIC photo: share it as JPEG, or take a screenshot of it.)");
+  if (photo.size > MAX_PHOTO) throw fail(400, `The photo is larger than ${MAX_PHOTO / 1e6} MB. Use a smaller one.`);
+  const fields = anyModelFields.safeParse({ name: form!.get("name"), kind: form!.get("kind"), description: form!.get("description") ?? "" });
+  if (!fields.success) throw fail(400, fields.error.issues[0]?.message ?? "bad request");
+  // The Python tool reads the photo from a file and keeps its own copy; this one is removed straight after.
+  const upload = join(tmpdir(), `faceless-model-${crypto.randomUUID()}${ext}`);
+  await Bun.write(upload, photo);
+  try {
+    return await myModels(["add", ...fieldArgs(fields.data), `--image=${upload}`]);
+  } finally {
+    await rm(upload, { force: true });
+  }
+}
+
+function modelParam(req: Req) {
+  const id = modelId.safeParse(req.params.id);
+  if (!id.success) throw fail(400, "That is not a model.");
+  return id.data;
+}
+
+async function modelPhoto(id: string) {
+  if (!modelsFolder) await myModels();
+  const path = join(modelsFolder!, id, "photo.jpg");
+  if (!existsSync(path)) throw fail(404, "That model is no longer there.");
+  return path;
+}
+
 // ------------------------------------------------------------------ server
 type Req = Bun.BunRequest<any>;
 const api = (handler: (req: Req) => Response | Promise<Response>) => async (req: Req) => {
@@ -279,6 +331,16 @@ const server = Bun.serve({
       DELETE: api(async () => json({ job: await cancel() })),
     },
     "/api/videos": { GET: api(async () => json({ videos: await videos() })) },
+    "/api/models": {
+      GET: api(async () => json(await myModels())),
+      POST: api(async (req) => json(await addModel(req))),
+    },
+    "/api/models/:id": {
+      PATCH: api(async (req) => json(await myModels(["edit", modelParam(req), ...fieldArgs(await body(req, anyModelFields))]))),
+      DELETE: api(async (req) => json(await myModels(["remove", modelParam(req)]))),
+    },
+    // A new photo means a new model, so a photo never changes under its address: the page adds ?v=created.
+    "/api/models/:id/photo": { GET: api(async (req) => new Response(Bun.file(await modelPhoto(modelParam(req))), { headers: { "cache-control": "private, max-age=31536000, immutable" } })) },
     "/api/videos/:name": {
       DELETE: api(async (req) => {
         const path = videoPath(req.params.name);

@@ -19,6 +19,7 @@ const base: RenderRequest = {
   ttsEngine: "edge",
   imageEngine: "pollinations",
   videoEngine: "fastmetal",
+  featuring: [],
   progressBar: true,
 };
 
@@ -39,6 +40,13 @@ test("arguments keep a leading dash inside the value", () => {
   expect(args).toContain("--tts-engine=edge");
   expect(args).not.toContain("--no-progress-bar");
   expect(buildArgs({ ...base, source: "preset", preset: "stoicism", progressBar: false }, "o.mp4")).toEqual(expect.arrayContaining(["--niche=stoicism", "--no-progress-bar"]));
+});
+
+test("featured models become one --featuring list, and only real model ids are accepted", () => {
+  expect(buildArgs(base, "o.mp4").some((a) => a.startsWith("--featuring"))).toBe(false);
+  expect(buildArgs({ ...base, featuring: ["ravi", "red-bike"] }, "o.mp4")).toContain("--featuring=ravi,red-bike");
+  expect(renderRequest.safeParse({ ...base, featuring: ["../etc"] }).success).toBe(false);
+  expect(renderRequest.safeParse({ ...base, featuring: ["-x"] }).success).toBe(false);
 });
 
 test("a request needs a topic or a preset", () => {

@@ -308,6 +308,34 @@ A scene without a storyboard gets its action from keywords in its text (*gym* li
 
 ---
 
+## 🧑 Your Models: a Person or Object from a Photo (`--featuring`)
+
+Make a model once from one photo (a man, woman, boy, girl or an object) and feature it in any short. Models are kept on this computer in `~/.config/faceless-shorts/my-models/` (outside the repository; `FACELESS_MY_MODELS_DIR` changes it). Use photos you have the right to use.
+
+```bash
+python -m faceless_shorts models add --name Ravi --kind man --image ravi.jpg   # description written by Gemini when a key is saved
+python -m faceless_shorts models add --name "Red bike" --kind object --image bike.jpg --description "red vintage bicycle with a wicker basket"
+python -m faceless_shorts models list
+python -m faceless_shorts models edit ravi --name "Ravi K" --description "late 20s, curly hair, round glasses"
+python -m faceless_shorts models remove "Red bike"
+
+python -m faceless_shorts generate --niche stoicism --engine flux2-klein --featuring ravi
+python -m faceless_shorts generate --niche stoicism --video-engine stickman --featuring ravi,red-bike
+```
+
+How each engine shows them:
+
+| Engine | Uses |
+| :--- | :--- |
+| Images `flux2-klein` (local, free) and `gemini` (paid) | The photo itself, so the face and clothes match. FLUX.2 klein takes about 2 minutes a scene with a photo |
+| Video `stickman` | The face goes on the figure's head; an object stands beside the figures as a picture |
+| Video `gemini` | Each clip opens on a picture of them made by the chosen image engine |
+| Every other engine (Pollinations, ComfyUI, Z-Image, FastMetal) | Only the model's description, as words |
+
+At most 3 models per short. A scene in a script JSON can name its own with `"featuring": ["ravi"]` (or `[]` for none). In the web app, the people icon at the top right opens **Your models**, and **Featuring** on the form picks them.
+
+---
+
 ## 🎞️ Real-Motion Scenes with a Local Video Model (`--video-engine fastmetal`)
 
 By default every scene is a still image with Ken Burns camera motion. With `--video-engine fastmetal` each scene is generated as a real video clip by [FastMetal 1.3B](https://huggingface.co/FastVideo/FastMetal-1.3B-QAD), which runs on your own Mac: free, private, no API key. The flag is optional. Without it, or on a computer that cannot run the model, shorts are made exactly as before.

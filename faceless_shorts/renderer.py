@@ -19,7 +19,7 @@ import os
 import shutil
 import subprocess
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from faceless_shorts.config import (
     CANVAS_WIDTH,
@@ -41,7 +41,8 @@ from faceless_shorts.config import (
     GEMINI_VIDEO_PRICE,
     SCENE_MOTIONS,
 )
-from faceless_shorts import stickman
+from faceless_shorts import my_models, stickman
+from faceless_shorts.my_models import Model
 from faceless_shorts.script_generator import VideoScript
 from faceless_shorts.tts_engine import GeminiTTS, TTSEngine, WordTimestamp
 from faceless_shorts.visuals import VisualManager
@@ -71,6 +72,7 @@ class VideoRenderer:
         encoder_preset: Optional[str] = None,
         video_engine: str = DEFAULT_VIDEO_ENGINE,
         tts_engine: str = DEFAULT_TTS_ENGINE,
+        featuring: Sequence[Model] = (),
     ):
         self.language = (language or DEFAULT_LANGUAGE).lower()
 
@@ -92,6 +94,7 @@ class VideoRenderer:
         self.work_dir = work_dir
         self.engine = engine or DEFAULT_IMAGE_ENGINE
         self.video_engine = video_engine if video_engine in VIDEO_ENGINES else DEFAULT_VIDEO_ENGINE
+        self.featuring = list(featuring)  # your models, in every scene that does not name its own
         self.tts_engine = tts_engine if tts_engine in TTS_ENGINES else DEFAULT_TTS_ENGINE
 
         # Quality profile: fps / CRF / x264 preset / audio bitrate / canvas size
@@ -280,6 +283,16 @@ class VideoRenderer:
             output_path=dest_path, topic=script.scenes[scene_index].text
         ), "procedural"
 
+    def _scene_models(self, scene) -> List[Model]:
+        """Your models in one scene: the ones the scene names itself, else the ones the whole short features."""
+        if scene.featuring is None:
+            return self.featuring
+        try:
+            return my_models.resolve(scene.featuring)
+        except ValueError as e:
+            print(f"    [!] Scene {scene.index}: {e} The scene is made without them.")
+            return []
+
     def render(
         self,
         script: VideoScript,
@@ -339,6 +352,11 @@ class VideoRenderer:
         # Rotating motion patterns so camera is constantly dynamic and engaging
         motion_rotation = SCENE_MOTIONS
 
+        scene_models = [self._scene_models(scene) for scene in script.scenes]
+        if any(scene_models):
+            names = ", ".join(dict.fromkeys(m.name for models in scene_models for m in models))
+            print(f"    → Featuring your models: {names}")
+
         def clip_duration(i: int) -> float:
             # When xfade is used, non-final clips have extra duration to provide overlap
             dur = scene_timings[i][2]
@@ -364,12 +382,22 @@ class VideoRenderer:
                     print(f"    → Scene {i+1}/{n_scenes}: Generating stickman clip ({clip_duration(i):.2f}s)...")
                     if stickman.render_clip(
                         scene.text, clip_path, clip_duration(i), self.fps, self.width, self.height,
-                        storyboard=scene.stick, index=i,
+                        storyboard=scene.stick, index=i, models=scene_models[i],
                     ):
                         ai_video_clips[i] = clip_path
                     else:
                         print(f"    [!] Scene {i+1}: stickman clip unavailable, using image + Ken Burns instead.")
                     continue
+                start_image = None
+                if self.video_engine == "gemini" and scene_models[i]:
+                    # The clip opens on the scene's picture, made with the models' photos, so they look like themselves.
+                    print(f"    → Scene {i+1}/{n_scenes}: Making its opening picture with your models ({self.engine})...")
+                    start_image = self.visuals.generate_ai_image(
+                        scene.visual_prompt, os.path.join(self.work_dir, f"opening_scene_{i+1:02d}.jpg"),
+                        models=scene_models[i], fallback=False,
+                    )
+                    if not start_image:
+                        print(f"    [!] Scene {i+1}: no opening picture; the clip gets your models as words instead.")
                 print(f"    → Scene {i+1}/{n_scenes}: Generating {self.video_engine} video clip "
                       f"({clip_duration(i):.2f}s, takes a few minutes)...")
                 if self.visuals.render_ai_video_clip(
@@ -380,6 +408,8 @@ class VideoRenderer:
                     width=self.width,
                     height=self.height,
                     engine=self.video_engine,
+                    models=scene_models[i],
+                    start_image=start_image,
                 ):
                     ai_video_clips[i] = clip_path
                 else:
@@ -398,7 +428,7 @@ class VideoRenderer:
             )
             if source == "ai":
                 print(f"    → Scene {i+1}: Queued AI visual ('{scene.visual_prompt[:40]}...')")
-                ai_job_queue.append({"prompt": scene.visual_prompt, "output_path": img_path})
+                ai_job_queue.append({"prompt": scene.visual_prompt, "output_path": img_path, "models": scene_models[i]})
                 raw_image_paths.append(img_path)
             elif source.startswith("custom:"):
                 print(f"    → Scene {i+1}: Using high-res custom visual ({source.split(':', 1)[1]})")

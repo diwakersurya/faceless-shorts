@@ -20,7 +20,7 @@ import os
 import re
 import subprocess
 from functools import lru_cache
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -266,8 +266,34 @@ def _headline(d: ImageDraw.ImageDraw, text: str, t: float, start: float) -> None
         x += width + font.getlength(" ")
 
 
-def draw_frame(t: float, plan: Dict[str, Optional[str]], duration: float, walk_in: bool = False) -> Image.Image:
-    """One frame of a scene, t seconds in, on the supersampled design canvas."""
+PHOTO_HEAD = 1.35  # a face from a photo is drawn this much bigger than a plain head, so it can be recognised
+PROP_SIDE = 260    # an object model's card, on the design canvas
+
+
+def _photo_head(img: Image.Image, d: ImageDraw.ImageDraw, head: Tuple[float, float], photo: Image.Image) -> None:
+    """Put a round face cut from a model's photo over a figure's head, with the same ink outline."""
+    r = HEAD * PHOTO_HEAD
+    box = [int((head[0] - r) * S), int((head[1] - r) * S)]
+    img.paste(photo, box, photo)
+    d.ellipse([box[0], box[1], box[0] + photo.width, box[1] + photo.height], outline=INK, width=int(12 * FIG * S))
+
+
+def _prop(img: Image.Image, d: ImageDraw.ImageDraw, cx: float, k: float, photo: Image.Image) -> None:
+    """An object model as a framed card standing on the ground, popping in with k (0 to 1)."""
+    if k <= 0.03:
+        return
+    side = int(photo.width * k)
+    card = photo.resize((side, side), Image.LANCZOS)
+    left, top = int(cx * S - side / 2), int((GROUND + 2) * S - side)
+    img.paste(card, (left, top))
+    d.rounded_rectangle([left, top, left + side, top + side], radius=int(14 * S * k), outline=INK, width=int(9 * S))
+
+
+def draw_frame(t: float, plan: Dict[str, Optional[str]], duration: float, walk_in: bool = False,
+               cast: Optional[Dict[str, Optional[Image.Image]]] = None) -> Image.Image:
+    """One frame of a scene, t seconds in, on the supersampled design canvas. *cast* (from your models):
+    "main" and "other" are round faces for the two figures, "prop" an object's square photo."""
+    cast = cast or {}
     img = Image.new("RGB", (W * S, H * S), PAPER)
     d = ImageDraw.Draw(img)
     action, other = plan["action"], plan["other"]
@@ -286,12 +312,16 @@ def draw_frame(t: float, plan: Dict[str, Optional[str]], duration: float, walk_i
 
     breathe = 2.5 * sin(2.4 * t)
     main_x = 330 if other else W / 2
+    if cast.get("prop") is not None:
+        _prop(img, d, W / 2 + 20 if other else 860, _pop((t - first - 0.1) / 0.4), cast["prop"])
     if t < arrive:
         k = t / arrive
         pose, x = ACTIONS["walk"](t), -150 + (main_x + 150) * (1 - (1 - k) ** 2)
     else:
         pose, x = _mix(_p(dy=breathe), ACTIONS[action](max(t - main_start, 0.0)), blend), main_x
     main = _figure(d, x, pose, 1, _FACES.get(action, "neutral") if blend > 0.5 else "neutral")
+    if cast.get("main") is not None:
+        _photo_head(img, d, main["head"], cast["main"])
     if action == "lift" and blend > 0.5:
         _barbell(d, main)
 
@@ -299,6 +329,8 @@ def draw_frame(t: float, plan: Dict[str, Optional[str]], duration: float, walk_i
         k_other = _smooth((t - first) / 0.35) * (1 - _smooth((t - main_start + 0.3) / 0.35))
         second = _figure(d, 790, _mix(_p(dy=-breathe), ACTIONS[other](max(t - first, 0.0)), k_other), -1,
                          _FACES.get(other, "neutral") if k_other > 0.5 else "neutral")
+        if cast.get("other") is not None:
+            _photo_head(img, d, second["head"], cast["other"])
         if other == "lift" and k_other > 0.5:
             _barbell(d, second)
         if plan["other_bubble"]:
@@ -321,13 +353,31 @@ def render_clip(
     height: int,
     storyboard: Optional[Dict] = None,
     index: int = 0,
+    models: Sequence = (),
 ) -> Optional[str]:
     """
     Draw scene number index (0-based) as a stick-figure clip of the given length and size.
-    The figure walks in on the first scene. Returns None on any failure so the caller can
-    fall back to the image + Ken Burns path.
+    The figure walks in on the first scene. *models* (my_models.Model): the first person's face goes
+    on the main figure, a second person's on the other figure, the first object stands beside them.
+    Returns None on any failure so the caller can fall back to the image + Ken Burns path.
     """
+    from faceless_shorts import my_models
+
     plan = storyboard_for(text, index, storyboard)
+    people = [m for m in models if m.is_person]
+    things = [m for m in models if not m.is_person]
+    if len(people) > 1 and not plan["other"]:
+        plan["other"] = "talk"  # two people featured: both are in the scene
+    size = int(2 * HEAD * PHOTO_HEAD * S)
+    try:
+        cast = {
+            "main": my_models.head(people[0], size) if people else None,
+            "other": my_models.head(people[1], size) if len(people) > 1 and plan["other"] else None,
+            "prop": my_models.card(things[0], PROP_SIDE * S) if things else None,
+        }
+    except OSError as e:  # the photo went missing since the model was chosen
+        print(f"    [!] A model's photo could not be read ({e}); drawing plain figures.")
+        cast = {}
     frames = max(math.ceil(duration * fps), 1)
     os.makedirs(os.path.dirname(os.path.abspath(output_video_path)), exist_ok=True)
     cmd = [
@@ -339,7 +389,7 @@ def render_clip(
         # ponytail: one frame at a time on one core, about 15 frames a second; draw scenes in
         # parallel processes if a 60 fps render gets too slow.
         for i in range(frames):
-            frame = draw_frame(i / fps, plan, duration, walk_in=index == 0)
+            frame = draw_frame(i / fps, plan, duration, walk_in=index == 0, cast=cast)
             frame = frame.reduce(S) if (width, height) == (W, H) else frame.resize((width, height), Image.LANCZOS)
             ffmpeg.stdin.write(frame.tobytes())
         ffmpeg.stdin.close()

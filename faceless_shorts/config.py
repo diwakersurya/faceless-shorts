@@ -1064,6 +1064,8 @@ MFLUX_MODELS = {
         "name": "FLUX.2 klein 4B",
         "about": "local, fast: 4 steps",
         "command": "mflux-generate-flux2",
+        # Draws from reference photos (your models) with the same weights; a model without one gets them as words.
+        "edit_command": "mflux-generate-flux2-edit",
         "model": "mflux-community/flux2-klein-4b-mflux-q4",
         "base_model": "flux2-klein-4b",
         "steps": 4,
@@ -1155,6 +1157,15 @@ IMAGE_ENGINES = {
     "procedural": "Offline procedural Pillow canvas (zero network)"
 }
 DEFAULT_IMAGE_ENGINE = "pollinations"
+
+# Your models (my_models.py): what each kind is called in a prompt. People get their face drawn in stick-figure scenes.
+MODEL_KINDS = {"man": "a man", "woman": "a woman", "boy": "a boy", "girl": "a girl", "object": "an object"}
+PEOPLE_KINDS = {"man", "woman", "boy", "girl"}
+
+# Engines that look at a model's photo; every other engine gets the model's description as words.
+# Gemini video starts from the scene's image (made with the photo), stick figures wear the face.
+PHOTO_IMAGE_ENGINES = {"gemini", *(key for key, spec in MFLUX_MODELS.items() if spec.get("edit_command"))}
+PHOTO_VIDEO_ENGINES = {"gemini", "stickman"}
 
 # Scene video engines. `none` keeps the classic still image + Ken Burns motion.
 VIDEO_ENGINES = {

@@ -49,7 +49,7 @@ import tempfile
 import time
 import uuid
 import wave
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from faceless_shorts.config import (
     DEFAULT_GEMINI_VIDEO_RESOLUTION,
@@ -830,9 +830,9 @@ class MfluxClient:
         self.key = model if model in MFLUX_MODELS else next(iter(MFLUX_MODELS))
         self.spec: Dict[str, Any] = MFLUX_MODELS[self.key]
 
-    def command(self) -> Optional[str]:
-        """Full path of this model's mflux command, or None when mflux is not installed."""
-        name = str(self.spec["command"])
+    def command(self, edit: bool = False) -> Optional[str]:
+        """Full path of this model's mflux command (edit=True: the one that takes reference photos), or None when mflux is not installed."""
+        name = str(self.spec["edit_command"] if edit and self.spec.get("edit_command") else self.spec["command"])
         # `uv tool install` puts commands in ~/.local/bin, which is not always on the PATH of the app that runs us.
         tool_dir = os.path.join(os.path.expanduser("~"), ".local", "bin")
         return shutil.which(name) or shutil.which(name, path=tool_dir)
@@ -857,8 +857,10 @@ class MfluxClient:
         output_path: str,
         seed: int = 42,
         portrait: bool = True,
+        refs: Sequence[str] = (),
     ) -> Optional[str]:
-        """Generate one image into *output_path* (any format Pillow writes). None on any failure."""
+        """Generate one image into *output_path* (any format Pillow writes). *refs*: photos the image must
+        show (your models), used when this model can take them. None on any failure."""
         problem = self.problem()
         if problem:
             print(f"    [!] mflux is not ready: {problem[1]}")
@@ -869,8 +871,9 @@ class MfluxClient:
         output_path = os.path.abspath(output_path)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         raw_path = output_path + ".mflux.png"  # mflux writes PNG; the pipeline wants its own name and format
+        refs = list(refs) if self.spec.get("edit_command") else []
         cmd = [
-            str(self.command()),
+            str(self.command(edit=bool(refs))),
             "--model", str(self.spec["model"]),
             "--prompt", prompt,
             "--width", str(width),
@@ -881,6 +884,8 @@ class MfluxClient:
         ]
         if self.spec.get("base_model"):
             cmd += ["--base-model", str(self.spec["base_model"])]
+        if refs:
+            cmd += ["--image-paths", *refs]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=MFLUX_TIMEOUT)
             if proc.returncode != 0 or not os.path.exists(raw_path):
@@ -1152,7 +1157,7 @@ class GeminiClient:
         return None
 
     def _media(
-        self, kind: str, prompt: str, response_format: Dict[str, Any], generation_config: Optional[Dict[str, Any]] = None
+        self, kind: str, prompt: Any, response_format: Dict[str, Any], generation_config: Optional[Dict[str, Any]] = None
     ) -> Optional[bytes]:
         made = "audio" if kind == "tts" else kind  # what the API calls the thing this kind of model makes
         parts, _ = self._ask(
@@ -1198,9 +1203,36 @@ class GeminiClient:
         except (KeyError, ValueError, AttributeError):
             return []
 
-    def generate_image(self, prompt: str, output_path: str, portrait: bool = True) -> Optional[str]:
-        """Generate one image into *output_path* (any format Pillow writes). None on any failure."""
-        data = self._media("image", prompt, {"aspect_ratio": "9:16" if portrait else "16:9", "image_size": "1K"})
+    @staticmethod
+    def _with_images(prompt: str, images: Sequence[str]) -> Any:
+        """The request input: the prompt alone, or the prompt followed by each picture, in order."""
+        if not images:
+            return prompt
+        parts: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for path in images:
+            with open(path, "rb") as handle:
+                data = base64.b64encode(handle.read()).decode("ascii")
+            parts.append({"type": "image", "data": data, "mime_type": "image/png" if path.lower().endswith(".png") else "image/jpeg"})
+        return parts
+
+    def look(self, image_path: str, question: str) -> Optional[str]:
+        """Ask the text model about a picture (free limits). The answer as text, or None."""
+        try:
+            prompt = self._with_images(question, [image_path])
+        except OSError:
+            return None
+        for model in dict.fromkeys([self.model("text"), str(GEMINI_MODELS["text"]["fallback"])]):
+            parts, status = self._ask("text", model, prompt)
+            if parts:
+                return "".join(str(part.get("text") or "") for part in parts if part.get("type") == "text").strip() or None
+            if status != 503:
+                break
+        return None
+
+    def generate_image(self, prompt: str, output_path: str, portrait: bool = True, refs: Sequence[str] = ()) -> Optional[str]:
+        """Generate one image into *output_path* (any format Pillow writes). *refs*: photos the image must
+        show (your models), sent along in order. None on any failure."""
+        data = self._media("image", self._with_images(prompt, refs), {"aspect_ratio": "9:16" if portrait else "16:9", "image_size": "1K"})
         if not data:
             return None
         try:
@@ -1224,9 +1256,12 @@ class GeminiClient:
         chosen = _env("GEMINI_VIDEO_RESOLUTION")
         return chosen if chosen in GEMINI_VIDEO_PRICE else DEFAULT_GEMINI_VIDEO_RESOLUTION
 
-    def generate(self, prompt: str, output_path: str, duration: float, portrait: bool = True) -> Optional[str]:
-        """Generate one clip (same call as FastMetalClient.generate) covering *duration* seconds (at most 15) into *output_path*. None on any failure."""
-        data = self._media("video", prompt, {
+    def generate(
+        self, prompt: str, output_path: str, duration: float, portrait: bool = True, start_image: Optional[str] = None
+    ) -> Optional[str]:
+        """Generate one clip (same call as FastMetalClient.generate) covering *duration* seconds (at most 15) into
+        *output_path*, opening on *start_image* when one is given. None on any failure."""
+        data = self._media("video", self._with_images(prompt, [start_image] if start_image else []), {
             "aspect_ratio": "9:16" if portrait else "16:9",
             "duration": f"{self.seconds_for(duration)}s",
             "resolution": self.video_resolution(),
