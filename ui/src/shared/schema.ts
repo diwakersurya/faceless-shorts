@@ -62,7 +62,9 @@ export const settings = z.object({
     .string()
     .trim()
     .max(200)
-    .regex(/^[\w-]*$/, "A Gemini API key has only letters, digits, - and _")
+    // Google checks the key when it is saved (config --gemini-key); here only spaces inside it are refused.
+    // Keys are not always letters, digits, - and _: newer ones look like "AQ.Ab8…".
+    .regex(/^\S*$/, "A Gemini API key has no spaces in it")
     .optional(),
 });
 export type Settings = z.infer<typeof settings>;
