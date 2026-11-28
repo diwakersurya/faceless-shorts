@@ -849,10 +849,11 @@ def create_or_get_script(
     if template:
         return template
 
-    # 2. Curated knowledge packs
-    knowledge = _knowledge_lookup(niche_or_topic)
-    if knowledge:
-        return knowledge
+    # 2. Curated knowledge packs (only for short topic queries, not multi-sentence story descriptions)
+    if len(niche_or_topic.split()) <= 6:
+        knowledge = _knowledge_lookup(niche_or_topic)
+        if knowledge:
+            return knowledge
 
     # 3. Optional free LLM (returns instantly when unreachable)
     if use_llm:

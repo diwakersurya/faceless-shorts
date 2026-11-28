@@ -56,7 +56,7 @@ export type DraftScript = z.infer<typeof draftScriptSchema>;
 
 export const scriptRequestSchema = z.object({
   source: z.enum(["topic", "preset"]),
-  topic: z.string().trim().max(200).default(""),
+  topic: z.string().trim().max(1500).default(""),
   preset: z.string().default(""),
   language: key.default("en"),
   scriptEngine: key.default("auto"),

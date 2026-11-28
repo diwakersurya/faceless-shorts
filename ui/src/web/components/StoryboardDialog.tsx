@@ -14,16 +14,23 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { VStack } from "@astryxdesign/core/VStack";
-import { ArrowDown, ArrowUp, Plus, RefreshCw, Sparkles, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Plus, RefreshCw, Sparkles, Trash2, Wand2 } from "lucide-react";
 import { useState } from "react";
 import type { DraftScript, SceneDraft } from "../../shared/schema";
 import type { MyModel, Options } from "../api";
-import { useUploadFile } from "../queries";
+import { useDraftScript, useUploadFile } from "../queries";
 import { toast } from "../toast";
+
+const AI_SCENE_COUNTS = [
+  { value: "auto", label: "Auto scenes" },
+  ...[3, 4, 5, 6, 7, 8, 10].map((n) => ({ value: String(n), label: `${n} scenes` })),
+];
 
 type Props = {
   options: Options;
   models: MyModel[];
+  language: string;
+  scriptEngine: string;
   defaultVideoEngine: string;
   initialScript: DraftScript;
   hasSavedProject: boolean;
@@ -40,6 +47,8 @@ function reindex(scenes: SceneDraft[]): SceneDraft[] {
 export function StoryboardDialog({
   options,
   models,
+  language,
+  scriptEngine,
   defaultVideoEngine,
   initialScript,
   hasSavedProject,
@@ -49,11 +58,39 @@ export function StoryboardDialog({
   onClose,
 }: Props) {
   const upload = useUploadFile();
+  const generateDraft = useDraftScript();
   const [script, setScript] = useState<DraftScript>(() => ({
     ...initialScript,
     scenes: reindex(initialScript.scenes),
   }));
   const [regen, setRegen] = useState<number[]>(initialRegenerateScenes);
+  const [aiOpen, setAiOpen] = useState(() => initialScript.scenes.every((sc) => !sc.text.trim()));
+  const [storyBrief, setStoryBrief] = useState("");
+  const [aiSceneCount, setAiSceneCount] = useState("auto");
+  const [aiTone, setAiTone] = useState("");
+
+  const handleGenerateFromStory = async () => {
+    const trimmed = storyBrief.trim();
+    if (trimmed.length < 3) {
+      toast.bad("Describe your story in a few words first.");
+      return;
+    }
+    try {
+      const res = await generateDraft.mutateAsync({
+        source: "topic",
+        topic: trimmed,
+        preset: "",
+        language,
+        scriptEngine,
+        sceneCount: aiSceneCount !== "auto" ? Number(aiSceneCount) : null,
+        tone: aiTone.trim(),
+        stickman: defaultVideoEngine === "stickman",
+      });
+      setScript({ ...res.script, scenes: reindex(res.script.scenes) });
+      setAiOpen(false);
+      toast.ok(`Generated ${res.script.scenes.length} scenes from your story`);
+    } catch {}
+  };
 
   const updateScene = (idx: number, patch: Partial<SceneDraft>) => {
     setScript((prev) => ({
@@ -119,6 +156,61 @@ export function StoryboardDialog({
     <Dialog isOpen onOpenChange={(open) => !open && onClose()} purpose="info" width={920} maxHeight="90dvh">
       <DialogHeader title="Script & Storyboard Editor" onOpenChange={(open) => !open && onClose()} />
       <VStack gap={4} padding={4}>
+        <Card padding={3}>
+          <VStack gap={3}>
+            <HStack justify="between" align="center" gap={2}>
+              <VStack gap={0.5}>
+                <Text weight="medium">Auto-generate scenes from a story</Text>
+                <Text size="sm" color="secondary">
+                  Describe the plot or idea and let the LLM write every scene's spoken text, visual prompts, and motions.
+                </Text>
+              </VStack>
+              <Button
+                label={aiOpen ? "Hide" : "Write with AI"}
+                size="sm"
+                variant={aiOpen ? "ghost" : "secondary"}
+                icon={<Wand2 size={14} />}
+                onClick={() => setAiOpen((v) => !v)}
+              />
+            </HStack>
+            {aiOpen && (
+              <VStack gap={3}>
+                <TextArea
+                  label="Story description"
+                  value={storyBrief}
+                  onChange={setStoryBrief}
+                  placeholder="e.g. A tired kid keeps scrolling on his phone past midnight until his mom walks in and reminds him about his exam tomorrow. Funny twist at the end."
+                  rows={3}
+                />
+                <Grid columns={2} gap={3}>
+                  <Selector
+                    label="Scenes"
+                    options={AI_SCENE_COUNTS}
+                    value={aiSceneCount}
+                    onChange={(v) => v && setAiSceneCount(v)}
+                  />
+                  <TextInput
+                    label="Tone (optional)"
+                    value={aiTone}
+                    onChange={setAiTone}
+                    placeholder="e.g. funny, dramatic, punchy"
+                  />
+                </Grid>
+                <HStack justify="end">
+                  <Button
+                    label="Generate all scenes"
+                    variant="primary"
+                    size="sm"
+                    icon={<Wand2 size={14} />}
+                    isDisabled={storyBrief.trim().length < 3}
+                    isLoading={generateDraft.isPending}
+                    onClick={handleGenerateFromStory}
+                  />
+                </HStack>
+              </VStack>
+            )}
+          </VStack>
+        </Card>
         <TextInput
           label="Title"
           value={script.title}

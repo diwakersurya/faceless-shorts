@@ -599,6 +599,8 @@ function Form({ options, busy, loadedProject, onClearProject, onSettings, onMode
         <StoryboardDialog
           options={options}
           models={known}
+          language={form.language}
+          scriptEngine={form.scriptEngine}
           defaultVideoEngine={form.videoEngine}
           initialScript={form.script ?? BLANK_SCRIPT}
           hasSavedProject={Boolean(form.projectName)}
