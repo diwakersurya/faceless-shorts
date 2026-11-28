@@ -11,7 +11,7 @@ import math
 import os
 import re
 from typing import List, Dict, Optional, Tuple
-from faceless_shorts.config import SUBTITLE_STYLES, LANGUAGES, CANVAS_WIDTH, CANVAS_HEIGHT
+from faceless_shorts.config import SUBTITLE_STYLES, SUBTITLE_POSITIONS, LANGUAGES, CANVAS_WIDTH, CANVAS_HEIGHT
 from faceless_shorts.tts_engine import WordTimestamp
 
 def format_ass_time(seconds: float) -> str:
@@ -32,12 +32,19 @@ class SubtitleGenerator:
         style_name: str = "hormozi",
         language: str = "en",
         width: int = CANVAS_WIDTH,
-        height: int = CANVAS_HEIGHT
+        height: int = CANVAS_HEIGHT,
+        position: str = "auto",
+        words_per_screen: Optional[int] = None,
     ):
         self.style_config = SUBTITLE_STYLES.get(style_name, SUBTITLE_STYLES["hormozi"]).copy()
         self.language = (language or "en").lower()
         self.width = width or CANVAS_WIDTH
         self.height = height or CANVAS_HEIGHT
+        if words_per_screen is not None and 1 <= int(words_per_screen) <= 6:
+            self.style_config["words_per_screen"] = int(words_per_screen)
+        pos_cfg = SUBTITLE_POSITIONS.get(position or "auto")
+        if pos_cfg and pos_cfg.get("margin_v") is not None:
+            self.style_config["margin_v"] = int(pos_cfg["margin_v"])
         self.words_per_screen = self.style_config.get("words_per_screen", 3)
         self.uppercase = self.style_config.get("uppercase", True)
         self.scale_bounce = self.style_config.get("scale_bounce", 118)

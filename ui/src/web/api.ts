@@ -1,8 +1,10 @@
 // The one place the web app talks to the server.
 import type { Progress } from "../render";
-import type { ModelFields, RenderRequest, Settings } from "../shared/schema";
+import type { DraftScript, ModelFields, RenderRequest, ScriptRequest, Settings } from "../shared/schema";
 
 export type Choice = { value: string; label: string; description?: string | null };
+export type SubtitlePreview = { font: string; primary: string; highlight: string; outline: string; uppercase: boolean; wordsPerScreen: number };
+export type SubtitleStyleChoice = Choice & { preview?: SubtitlePreview };
 /** usesPhoto: the engine looks at your models' photos; the others get their descriptions as words. */
 export type Engine = Choice & { available: boolean; usesPhoto: boolean };
 /** Every list the form offers. The Python tool owns them; nothing here is hardcoded in the page. */
@@ -10,24 +12,38 @@ export type Options = {
   presets: (Choice & { scenes: number })[];
   languages: (Choice & { defaultVoice: string; voices: string[] })[];
   voices: (Choice & { language: string })[];
-  subtitleStyles: Choice[];
+  subtitleStyles: SubtitleStyleChoice[];
+  subtitlePositions: Choice[];
+  vfx: Choice[];
+  motions: Choice[];
+  stickActions: Choice[];
+  stickCharacters?: Choice[];
   artStyles: (Choice & { category: string })[];
   transitions: Choice[];
   effects: Choice[];
   qualities: Choice[];
   music: string[];
-  /** available: false when the engine needs something installed, running or saved; its description then says what. */
   scriptEngines: Engine[];
   ttsEngines: Engine[];
   imageEngines: Engine[];
   videoEngines: Engine[];
-  /** Whether a Gemini API key is there, where it comes from ("settings" or the name of an environment variable) and its last 4 characters. Never the key. voices: the voices Gemini speaks in (its own, the same for every language). */
   gemini: { configured: boolean; source: string | null; ending: string | null; voices: Choice[]; defaultVoice: string };
-  /** The local video model: whether it is ready, where it was looked for, what was not there and the command that fixes it. */
   fastmetal: { available: boolean; home: string; missing: string | null; fix: string | null; configured: string };
-  /** The rules for your models. describedByGemini: a model saved without a description gets one written from its photo. */
   myModels: { kinds: Choice[]; maxFeatured: number; maxName: number; maxDescription: number; describedByGemini: boolean };
-  defaults: Omit<RenderRequest, "source" | "topic" | "preset" | "progressBar" | "featuring">;
+  defaults: {
+    language: string;
+    voice: string;
+    subtitleStyle: string;
+    artStyle: string;
+    transition: string;
+    effects: string;
+    quality: string;
+    music: string;
+    scriptEngine: string;
+    ttsEngine: string;
+    imageEngine: string;
+    videoEngine: string;
+  };
   settings: Settings;
 };
 export type Job = {
@@ -42,11 +58,11 @@ export type Job = {
   video: string;
   error: string | null;
 };
-/** One of your models: a person or an object made from a photo. */
+export type QueuedJob = { id: string; title: string; request: RenderRequest; queuedAt: number };
 export type MyModel = { id: string; name: string; kind: string; description: string; created: number };
-/** folder: where the Python tool keeps the photos. changed: the model just added, edited or removed. */
 export type MyModels = { folder: string; models: MyModel[]; changed?: MyModel };
-export type Video = { name: string; size: number; createdAt: number; title: string | null; caption: string | null; tags: string[] };
+export type Video = { name: string; size: number; createdAt: number; title: string | null; caption: string | null; tags: string[]; hasProject?: boolean };
+export type SavedProject = { script: DraftScript; project_dir: string; projectName: string | null; settings: Record<string, unknown> };
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch("/api" + path, init);
@@ -65,10 +81,24 @@ const model = (id: string) => "/models/" + encodeURIComponent(id);
 export const api = {
   options: () => call<Options>("/options"),
   saveSettings: (settings: Settings) => call<Settings>("/settings", send("PUT", settings)),
-  job: () => call<{ job: Job | null }>("/job"),
-  start: (request: RenderRequest) => call<{ job: Job }>("/job", send("POST", request)),
-  cancel: () => call<{ job: Job }>("/job", send("DELETE")),
+  draftScript: (request: ScriptRequest) => call<{ script: DraftScript }>("/script", send("POST", request)),
+  uploadFile: (file: File) => {
+    const form = new FormData();
+    form.set("file", file);
+    return call<{ file: string; name: string }>("/uploads", { method: "POST", body: form });
+  },
+  voicePreviewUrl: (params: { engine: string; voice: string; language: string; rate?: string; voiceStyle?: string }) => {
+    const qs = new URLSearchParams({ engine: params.engine, voice: params.voice, language: params.language });
+    if (params.rate) qs.set("rate", params.rate);
+    if (params.voiceStyle) qs.set("voiceStyle", params.voiceStyle);
+    return `/api/voice-preview?${qs.toString()}`;
+  },
+  job: () => call<{ job: Job | null; queue: QueuedJob[] }>("/job"),
+  start: (request: RenderRequest) => call<{ job: Job; queue: QueuedJob[]; queued: boolean }>("/job", send("POST", request)),
+  cancel: () => call<{ job: Job; queue: QueuedJob[] }>("/job", send("DELETE")),
+  removeQueued: (id: string) => call<{ job: Job | null; queue: QueuedJob[] }>(`/queue/${encodeURIComponent(id)}`, send("DELETE")),
   videos: () => call<{ videos: Video[] }>("/videos"),
+  videoProject: (name: string) => call<SavedProject>(`${at(name)}/project`),
   deleteVideo: (name: string) => call<{ deleted: string }>(at(name), send("DELETE")),
   videoUrl: (name: string) => `/api${at(name)}/file`,
   posterUrl: (name: string) => `/api${at(name)}/poster`,
@@ -82,6 +112,5 @@ export const api = {
   },
   editModel: (id: string, fields: ModelFields) => call<MyModels>(model(id), send("PATCH", fields)),
   deleteModel: (id: string) => call<MyModels>(model(id), send("DELETE")),
-  // A model's photo never changes (another photo is another model), so created makes a lasting address.
   modelPhotoUrl: (m: MyModel) => `/api${model(m.id)}/photo?v=${m.created}`,
 };

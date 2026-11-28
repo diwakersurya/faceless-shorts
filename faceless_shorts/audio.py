@@ -301,3 +301,31 @@ class SoundEngine:
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return output_path
 
+    def mix_voice_with_sfx(
+        self,
+        voiceover_path: str,
+        transition_sfx_path: str,
+        output_path: str,
+    ) -> str:
+        """Master clean voiceover mixed with transition whoosh SFX (no background music)."""
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        filter_graph = (
+            "[0:a]highpass=f=50[voice];"
+            "[1:a]volume=-3dB[sfx];"
+            "[voice][sfx]amix=inputs=2:duration=first:dropout_transition=2,"
+            "loudnorm=I=-14:LRA=7:TP=-1.5[outa]"
+        )
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", voiceover_path,
+            "-i", transition_sfx_path,
+            "-filter_complex", filter_graph,
+            "-map", "[outa]",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",
+            output_path,
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return output_path
+

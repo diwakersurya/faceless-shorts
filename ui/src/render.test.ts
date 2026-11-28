@@ -92,3 +92,58 @@ test("the API answers its own page, the tailnet name when told, and nobody else"
   expect(allowed(req("http://mac.tail1234.ts.net/api/job", "https://mac.tail1234.ts.net"), tailnet)).toBe(true);
   expect(allowed(req("http://mac.tail1234.ts.net/api/job", "https://evil.example"), tailnet)).toBe(false);
 });
+
+test("custom storyboard, audio, caption, and fast re-assembly flags are passed cleanly", () => {
+  const custom: RenderRequest = {
+    ...base,
+    source: "custom",
+    script: {
+      title: "My Directed Short",
+      niche: "custom",
+      target_duration: 30,
+      hook: "Watch this",
+      scenes: [{ index: 1, text: "Scene one.", visual_prompt: "neon alley", motion: "pan_left", seed: 77 }],
+      cta: "Follow",
+      tags: ["#shorts"],
+    },
+    vfx: "particles",
+    speechRate: "+15%",
+    musicVolume: -14,
+    whoosh: true,
+    subtitlesEnabled: false,
+    subtitlePosition: "top",
+    wordsPerScreen: 2,
+    watermark: "@diwaker",
+    hookTitle: "DON'T MISS THIS",
+    reuseVisuals: true,
+    regenerateScenes: [2, 4],
+  };
+  expect(renderRequest.safeParse(custom).success).toBe(true);
+  expect(outputName(custom, new Date(2026, 10, 28, 8, 0, 0))).toBe("my-directed-short-20261128-080000.mp4");
+  const args = buildArgs(custom, "output/out.mp4", {
+    scriptJsonPath: "output/.projects/p/draft_script.json",
+    projectDir: "output/.projects/p",
+    musicFilePath: "output/.uploads/song.mp3",
+    voiceoverPath: "output/.uploads/voice.wav",
+  });
+  expect(args).toEqual(
+    expect.arrayContaining([
+      "--script-json=output/.projects/p/draft_script.json",
+      "--vfx=particles",
+      "--rate=+15%",
+      "--music-volume=-14",
+      "--whoosh",
+      "--no-subtitles",
+      "--subtitle-position=top",
+      "--words-per-screen=2",
+      "--watermark=@diwaker",
+      "--hook-title=DON'T MISS THIS",
+      "--music-file=output/.uploads/song.mp3",
+      "--voiceover=output/.uploads/voice.wav",
+      "--project-dir=output/.projects/p",
+      "--reuse-visuals",
+      "--regenerate-scene=2",
+      "--regenerate-scene=4",
+    ]),
+  );
+});

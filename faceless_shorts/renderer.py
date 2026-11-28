@@ -15,11 +15,13 @@ Features:
 - Studio Sound Design: Sub-Bass Drones, Transition Whoosh SFX & -14 LUFS Audio Ducking
 """
 
+import difflib
 import os
+import re
 import shutil
 import subprocess
 import time
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from faceless_shorts.config import (
     CANVAS_WIDTH,
@@ -44,7 +46,7 @@ from faceless_shorts.config import (
 from faceless_shorts import my_models, stickman
 from faceless_shorts.my_models import Model
 from faceless_shorts.script_generator import VideoScript
-from faceless_shorts.tts_engine import GeminiTTS, TTSEngine, WordTimestamp
+from faceless_shorts.tts_engine import GeminiTTS, TTSEngine, WordTimestamp, load_custom_voiceover
 from faceless_shorts.visuals import VisualManager
 from faceless_shorts.subtitles import SubtitleGenerator
 from faceless_shorts.audio import SoundEngine
@@ -73,6 +75,14 @@ class VideoRenderer:
         video_engine: str = DEFAULT_VIDEO_ENGINE,
         tts_engine: str = DEFAULT_TTS_ENGINE,
         featuring: Sequence[Model] = (),
+        subtitles_enabled: bool = True,
+        subtitle_position: str = "auto",
+        words_per_screen: Optional[int] = None,
+        music_volume_db: float = -18.0,
+        transition_sfx: Optional[bool] = None,
+        voice_style: str = "",
+        watermark: str = "",
+        hook_title: str = "",
     ):
         self.language = (language or DEFAULT_LANGUAGE).lower()
 
@@ -96,6 +106,14 @@ class VideoRenderer:
         self.video_engine = video_engine if video_engine in VIDEO_ENGINES else DEFAULT_VIDEO_ENGINE
         self.featuring = list(featuring)  # your models, in every scene that does not name its own
         self.tts_engine = tts_engine if tts_engine in TTS_ENGINES else DEFAULT_TTS_ENGINE
+        self.subtitles_enabled = bool(subtitles_enabled)
+        self.subtitle_position = subtitle_position or "auto"
+        self.words_per_screen = words_per_screen
+        self.music_volume_db = float(music_volume_db)
+        self.transition_sfx = transition_sfx  # None: auto (on when music is on); True/False: explicit
+        self.voice_style = (voice_style or "").strip()
+        self.watermark = (watermark or "").strip()
+        self.hook_title = (hook_title or "").strip()
 
         # Quality profile: fps / CRF / x264 preset / audio bitrate / canvas size
         profile = QUALITY_PROFILES.get(quality, QUALITY_PROFILES[DEFAULT_QUALITY])
@@ -139,8 +157,10 @@ class VideoRenderer:
             language=self.language,
             width=self.width,
             height=self.height,
+            position=self.subtitle_position,
+            words_per_screen=self.words_per_screen,
         )
-        if self.video_engine == "stickman":
+        if self.video_engine == "stickman" and self.subtitle_position == "auto":
             # Captions go under the ground line the figures stand on, not across their legs.
             self.subtitles.style_config["margin_v"] = int(stickman.CAPTION_MARGIN_V * self.height / stickman.H)
         self.audio = SoundEngine()
@@ -191,43 +211,66 @@ class VideoRenderer:
         """
         Map continuous word stream to individual scenes to establish exact
         start, end, and duration boundaries for each visual clip.
+        Uses sequence alignment against spoken words so TTS expansions ("99%" -> "ninety nine percent")
+        or split hyphenated tokens never cause scene cuts to drift off-beat.
         Returns list of (start_time, end_time, duration).
         """
-        scene_boundaries = []
-        word_cursor = 0
+        if not scenes:
+            return []
         total_words_count = len(all_words)
+        if total_words_count == 0:
+            per = max(total_duration / len(scenes), 1.0)
+            return [(i * per, (i + 1) * per, per) for i in range(len(scenes))]
 
+        # Build flat script token list with scene start indices, then align to all_words.
+        plain = lambda w: re.sub(r"\W", "", w.lower())
+        script_tokens: List[str] = []
+        scene_token_starts: List[int] = []
+        for scene in scenes:
+            scene_token_starts.append(len(script_tokens))
+            script_tokens.extend(scene.text.split())
+
+        aligned_starts: Dict[int, int] = {}
+        if script_tokens:
+            matcher = difflib.SequenceMatcher(
+                None,
+                [plain(t) for t in script_tokens],
+                [plain(w.word) for w in all_words],
+                autojunk=False,
+            )
+            token_to_word: Dict[int, int] = {}
+            for block in matcher.get_matching_blocks():
+                for k in range(block.size):
+                    token_to_word[block.a + k] = block.b + k
+            for s_idx, tok_start in enumerate(scene_token_starts):
+                tok_end = scene_token_starts[s_idx + 1] if s_idx + 1 < len(scene_token_starts) else len(script_tokens)
+                for t_idx in range(tok_start, tok_end):
+                    if t_idx in token_to_word:
+                        aligned_starts[s_idx] = token_to_word[t_idx]
+                        break
+
+        scene_boundaries: List[Tuple[float, float, float]] = []
         for i, scene in enumerate(scenes):
-            scene_word_tokens = scene.text.split()
-            count = len(scene_word_tokens)
-
-            # Words for this scene
-            scene_words = all_words[word_cursor : min(word_cursor + count, total_words_count)]
-            word_cursor += count
-
-            if i == 0:
-                scene_start = 0.0
-            else:
-                scene_start = scene_boundaries[-1][1]
-
+            scene_start = 0.0 if i == 0 else scene_boundaries[-1][1]
             if i == len(scenes) - 1:
                 scene_end = total_duration
             else:
-                # Find start of next scene's first word or extend past current scene's last word
-                next_word_idx = word_cursor
-                if next_word_idx < total_words_count:
+                next_word_idx = aligned_starts.get(i + 1)
+                if next_word_idx is None:
+                    # Proportional fallback if next scene had no direct lexical match
+                    ratio = scene_token_starts[i + 1] / max(len(script_tokens), 1)
+                    next_word_idx = min(int(round(ratio * total_words_count)), total_words_count - 1)
+                if 0 <= next_word_idx < total_words_count:
                     scene_end = all_words[next_word_idx].start_sec
-                elif scene_words:
-                    scene_end = scene_words[-1].end_sec + 0.3
                 else:
-                    scene_end = scene_start + 5.0
+                    scene_end = scene_start + max((total_duration - scene_start) / max(len(scenes) - i, 1), 1.0)
 
-            # Ensure minimum duration
             if scene_end <= scene_start:
-                scene_end = scene_start + 4.0
+                remaining = max(total_duration - scene_start, 1.0)
+                scene_end = min(total_duration, scene_start + max(remaining / max(len(scenes) - i, 1), 0.5))
 
-            duration = scene_end - scene_start
-            scene_boundaries.append((scene_start, scene_end, duration))
+            duration = max(scene_end - scene_start, 0.5)
+            scene_boundaries.append((scene_start, scene_start + duration, duration))
 
         return scene_boundaries
 
@@ -245,6 +288,31 @@ class VideoRenderer:
             output_path
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    def _find_custom_scene_video(
+        self,
+        script: VideoScript,
+        scene_index: int,
+        custom_images_dir: Optional[str],
+    ) -> Optional[str]:
+        """Return a user-provided video clip for this scene if scene.media_path or custom_images_dir has one."""
+        scene = script.scenes[scene_index]
+        video_exts = (".mp4", ".mov", ".webm", ".mkv")
+        if scene.media_path and os.path.exists(scene.media_path) and scene.media_path.lower().endswith(video_exts):
+            return scene.media_path
+        candidates = []
+        if custom_images_dir and os.path.exists(custom_images_dir):
+            candidates.append(custom_images_dir)
+        default_niche_dir = os.path.join("images", script.niche)
+        if os.path.exists(default_niche_dir):
+            candidates.append(default_niche_dir)
+        for base in candidates:
+            for ext in video_exts:
+                for name in (f"scene_{scene_index + 1:02d}{ext}", f"scene_{scene_index + 1}{ext}"):
+                    p = os.path.join(base, name)
+                    if os.path.exists(p):
+                        return p
+        return None
+
     def _resolve_scene_image(
         self,
         script: VideoScript,
@@ -255,9 +323,15 @@ class VideoRenderer:
     ) -> Tuple[str, str]:
         """
         Resolve the source visual for a scene in priority order:
-        custom folder -> workspace images/<niche>/ -> AI engine -> procedural.
+        scene.media_path -> custom folder -> workspace images/<niche>/ -> AI engine -> procedural.
         Returns (resolved_image_path, source_label).
         """
+        scene = script.scenes[scene_index]
+        img_exts = (".jpg", ".png", ".jpeg", ".webp")
+        if scene.media_path and os.path.exists(scene.media_path) and scene.media_path.lower().endswith(img_exts):
+            shutil.copy(scene.media_path, dest_path)
+            return dest_path, f"custom:{scene.media_path}"
+
         candidates = []
         if custom_images_dir and os.path.exists(custom_images_dir):
             candidates.append(custom_images_dir)
@@ -266,7 +340,7 @@ class VideoRenderer:
             candidates.append(default_niche_dir)
 
         for base in candidates:
-            for ext in [".jpg", ".png", ".jpeg", ".webp"]:
+            for ext in img_exts:
                 c1 = os.path.join(base, f"scene_{scene_index+1:02d}{ext}")
                 c2 = os.path.join(base, f"scene_{scene_index+1}{ext}")
                 if os.path.exists(c1):
@@ -299,7 +373,10 @@ class VideoRenderer:
         output_mp4_path: str,
         custom_bg_music: Optional[str] = None,
         custom_images_dir: Optional[str] = None,
-        enable_ai_images: bool = True
+        enable_ai_images: bool = True,
+        custom_voiceover: Optional[str] = None,
+        reuse_visuals: bool = False,
+        regenerate_scenes: Optional[Set[int]] = None,
     ) -> str:
         """
         Execute full end-to-end automated production pipeline.
@@ -308,27 +385,36 @@ class VideoRenderer:
         start_time = time.time()
         os.makedirs(self.work_dir, exist_ok=True)
         os.makedirs(os.path.dirname(os.path.abspath(output_mp4_path)), exist_ok=True)
+        regen_set = set(regenerate_scenes or ())
 
         n_scenes = len(script.scenes)
-        print(f"\n🚀 [1/5] Synthesizing continuous neural voiceover ({self.voice}, language={self.language})...")
         full_text = " ".join(scene.text for scene in script.scenes)
         master_voice_path = os.path.join(self.work_dir, "master_voice.mp3")
 
-        audio_res = None
-        edge_voice = self.voice
-        if self.tts_engine == "gemini":
-            audio_res = GeminiTTS(self.voice).synthesize(full_text, os.path.join(self.work_dir, "master_voice.wav"))
+        if custom_voiceover and os.path.exists(custom_voiceover):
+            print(f"\n🚀 [1/5] Loading custom voiceover ({os.path.basename(custom_voiceover)})...")
+            audio_res = load_custom_voiceover(custom_voiceover, full_text, language=self.language)
+        else:
+            print(f"\n🚀 [1/5] Synthesizing continuous neural voiceover ({self.voice}, language={self.language})...")
+            audio_res = None
+            edge_voice = self.voice
+            if self.tts_engine == "gemini":
+                audio_res = GeminiTTS(self.voice).synthesize(
+                    full_text,
+                    os.path.join(self.work_dir, "master_voice.wav"),
+                    style_prompt=self.voice_style,
+                )
+                if audio_res is None:
+                    # self.voice names a Gemini voice here, so Edge-TTS takes the usual voice of the language.
+                    edge_voice = LANGUAGES.get(self.language, LANGUAGES[DEFAULT_LANGUAGE])["default_voice"]
+                    print(f"    [!] Gemini did not make the voice-over; Edge-TTS ({edge_voice}) speaks it instead.")
             if audio_res is None:
-                # self.voice names a Gemini voice here, so Edge-TTS takes the usual voice of the language.
-                edge_voice = LANGUAGES.get(self.language, LANGUAGES[DEFAULT_LANGUAGE])["default_voice"]
-                print(f"    [!] Gemini did not make the voice-over; Edge-TTS ({edge_voice}) speaks it instead.")
-        if audio_res is None:
-            audio_res = self.tts.synthesize(
-                text=full_text,
-                output_path=master_voice_path,
-                voice=edge_voice,
-                rate=self.speech_rate
-            )
+                audio_res = self.tts.synthesize(
+                    text=full_text,
+                    output_path=master_voice_path,
+                    voice=edge_voice,
+                    rate=self.speech_rate
+                )
         master_voice_path = audio_res.audio_path
 
         all_words = audio_res.words
@@ -362,44 +448,57 @@ class VideoRenderer:
             dur = scene_timings[i][2]
             return dur + trans_dur if (use_xfade and i < n_scenes - 1) else dur
 
-        # ------------------------------------------- optional AI video scene clips
-        # Real motion from a video model (local FastMetal or online Gemini) instead of effects
-        # on a still image. A scene whose clip fails falls through to the image + Ken Burns path below.
+        # ------------------------------------------- optional AI / custom video scene clips
+        # Real motion per scene: custom clip, stickman, stock B-roll, FastMetal, or Gemini.
+        # Each scene can override video_engine via scene.video_engine; failures fall through to image + Ken Burns.
         ai_video_clips: Dict[int, str] = {}
-        if self.video_engine != "none":
-            if self.video_engine == "gemini":
-                # Paid by the second: say what the clips come to before any is asked for.
-                from faceless_shorts.integrations import GeminiClient
-                seconds = sum(GeminiClient.seconds_for(clip_duration(i)) for i in range(n_scenes))
-                resolution = GeminiClient.video_resolution()
-                print(f"    → Gemini video: {n_scenes} clips, {seconds} s at {resolution}, about "
-                      f"${seconds * GEMINI_VIDEO_PRICE[resolution]:.2f} at list price "
-                      f"(clips made before are reused, not paid for again).")
-            for i, scene in enumerate(script.scenes):
-                clip_path = os.path.join(self.work_dir, f"clip_scene_{i+1:02d}.mp4")
-                if self.video_engine == "stickman":
-                    # Drawn by code from the scene's storyboard (or its text): no model, a few seconds.
-                    print(f"    → Scene {i+1}/{n_scenes}: Generating stickman clip ({clip_duration(i):.2f}s)...")
-                    if stickman.render_clip(
-                        scene.text, clip_path, clip_duration(i), self.fps, self.width, self.height,
-                        storyboard=scene.stick, index=i, models=scene_models[i],
-                    ):
-                        ai_video_clips[i] = clip_path
-                    else:
-                        print(f"    [!] Scene {i+1}: stickman clip unavailable, using image + Ken Burns instead.")
+        effective_engines = [
+            (scene.video_engine if scene.video_engine in VIDEO_ENGINES else self.video_engine)
+            for scene in script.scenes
+        ]
+        if any(e == "gemini" for e in effective_engines):
+            from faceless_shorts.integrations import GeminiClient
+            gemini_indices = [i for i, e in enumerate(effective_engines) if e == "gemini"]
+            seconds = sum(GeminiClient.seconds_for(clip_duration(i)) for i in gemini_indices)
+            resolution = GeminiClient.video_resolution()
+            print(f"    → Gemini video: {len(gemini_indices)} clips, {seconds} s at {resolution}, about "
+                  f"${seconds * GEMINI_VIDEO_PRICE[resolution]:.2f} at list price "
+                  f"(clips made before are reused, not paid for again).")
+
+        for i, scene in enumerate(script.scenes):
+            clip_path = os.path.join(self.work_dir, f"clip_scene_{i+1:02d}.mp4")
+            scene_num = i + 1
+            if reuse_visuals and scene_num not in regen_set and os.path.exists(clip_path):
+                print(f"    → Scene {scene_num}/{n_scenes}: Reusing existing clip")
+                ai_video_clips[i] = clip_path
+                continue
+
+            custom_clip = self._find_custom_scene_video(script, i, custom_images_dir)
+            if custom_clip:
+                print(f"    → Scene {scene_num}/{n_scenes}: Fitting custom video clip ({os.path.basename(custom_clip)})...")
+                if self.visuals.fit_custom_video_clip(
+                    custom_clip, clip_path, clip_duration(i), fps=self.fps, width=self.width, height=self.height
+                ):
+                    ai_video_clips[i] = clip_path
                     continue
-                start_image = None
-                if self.video_engine == "gemini" and scene_models[i]:
-                    # The clip opens on the scene's picture, made with the models' photos, so they look like themselves.
-                    print(f"    → Scene {i+1}/{n_scenes}: Making its opening picture with your models ({self.engine})...")
-                    start_image = self.visuals.generate_ai_image(
-                        scene.visual_prompt, os.path.join(self.work_dir, f"opening_scene_{i+1:02d}.jpg"),
-                        models=scene_models[i], fallback=False,
-                    )
-                    if not start_image:
-                        print(f"    [!] Scene {i+1}: no opening picture; the clip gets your models as words instead.")
-                print(f"    → Scene {i+1}/{n_scenes}: Generating {self.video_engine} video clip "
-                      f"({clip_duration(i):.2f}s, takes a few minutes)...")
+
+            scene_ve = effective_engines[i]
+            if scene_ve == "none":
+                continue
+
+            if scene_ve == "stickman":
+                print(f"    → Scene {scene_num}/{n_scenes}: Generating stickman clip ({clip_duration(i):.2f}s)...")
+                if stickman.render_clip(
+                    scene.text, clip_path, clip_duration(i), self.fps, self.width, self.height,
+                    storyboard=scene.stick, index=i, models=scene_models[i],
+                ):
+                    ai_video_clips[i] = clip_path
+                else:
+                    print(f"    [!] Scene {scene_num}: stickman clip unavailable, using image + Ken Burns instead.")
+                continue
+
+            if scene_ve == "stock":
+                print(f"    → Scene {scene_num}/{n_scenes}: Fetching stock B-roll clip ({clip_duration(i):.2f}s)...")
                 if self.visuals.render_ai_video_clip(
                     prompt=scene.visual_prompt,
                     output_video_path=clip_path,
@@ -407,34 +506,69 @@ class VideoRenderer:
                     fps=self.fps,
                     width=self.width,
                     height=self.height,
-                    engine=self.video_engine,
-                    models=scene_models[i],
-                    start_image=start_image,
+                    engine="stock",
                 ):
                     ai_video_clips[i] = clip_path
                 else:
-                    print(f"    [!] Scene {i+1}: video clip unavailable, using image + Ken Burns instead.")
+                    print(f"    [!] Scene {scene_num}: stock B-roll unavailable, using image + Ken Burns instead.")
+                continue
+
+            start_image = None
+            if scene_ve == "gemini" and scene_models[i]:
+                print(f"    → Scene {scene_num}/{n_scenes}: Making its opening picture with your models ({self.engine})...")
+                start_image = self.visuals.generate_ai_image(
+                    scene.visual_prompt, os.path.join(self.work_dir, f"opening_scene_{i+1:02d}.jpg"),
+                    seed=scene.seed, models=scene_models[i], fallback=False,
+                )
+                if not start_image:
+                    print(f"    [!] Scene {scene_num}: no opening picture; the clip gets your models as words instead.")
+            print(f"    → Scene {scene_num}/{n_scenes}: Generating {scene_ve} video clip "
+                  f"({clip_duration(i):.2f}s, takes a few minutes)...")
+            if self.visuals.render_ai_video_clip(
+                prompt=scene.visual_prompt,
+                output_video_path=clip_path,
+                duration=clip_duration(i),
+                fps=self.fps,
+                width=self.width,
+                height=self.height,
+                engine=scene_ve,
+                models=scene_models[i],
+                start_image=start_image,
+            ):
+                ai_video_clips[i] = clip_path
+            else:
+                print(f"    [!] Scene {scene_num}: video clip unavailable, using image + Ken Burns instead.")
 
         # ---------------------------------------------------- resolve raw images
         raw_image_paths: List[str] = []
         ai_job_queue: List[Dict] = []
         for i, scene in enumerate(script.scenes):
             img_path = os.path.join(self.work_dir, f"image_scene_{i+1:02d}.jpg")
+            scene_num = i + 1
             if i in ai_video_clips:
                 raw_image_paths.append(img_path)  # placeholder, never read
+                continue
+            if reuse_visuals and scene_num not in regen_set and os.path.exists(img_path):
+                print(f"    → Scene {scene_num}: Reusing existing image")
+                raw_image_paths.append(img_path)
                 continue
             resolved, source = self._resolve_scene_image(
                 script, i, img_path, enable_ai_images, custom_images_dir
             )
             if source == "ai":
-                print(f"    → Scene {i+1}: Queued AI visual ('{scene.visual_prompt[:40]}...')")
-                ai_job_queue.append({"prompt": scene.visual_prompt, "output_path": img_path, "models": scene_models[i]})
+                print(f"    → Scene {scene_num}: Queued AI visual ('{scene.visual_prompt[:40]}...')")
+                ai_job_queue.append({
+                    "prompt": scene.visual_prompt,
+                    "output_path": img_path,
+                    "seed": scene.seed,
+                    "models": scene_models[i],
+                })
                 raw_image_paths.append(img_path)
             elif source.startswith("custom:"):
-                print(f"    → Scene {i+1}: Using high-res custom visual ({source.split(':', 1)[1]})")
+                print(f"    → Scene {scene_num}: Using high-res custom visual ({source.split(':', 1)[1]})")
                 raw_image_paths.append(resolved)
             else:
-                print(f"    → Scene {i+1}: Offline procedural canvas")
+                print(f"    → Scene {scene_num}: Offline procedural canvas")
                 raw_image_paths.append(resolved)
 
         # Parallel network-bound AI generation (4 concurrent Flux requests)
@@ -534,17 +668,27 @@ class VideoRenderer:
         )
         print(f"    ✓ Burned subtitles mapped to millisecond speech events")
 
-        # Prepare audio: Clean studio voiceover or optional background music
+        # Prepare audio: Clean studio voiceover, optional transition whooshes, and/or background music
         has_custom_music = bool(custom_bg_music and os.path.exists(custom_bg_music))
         has_preset_music = bool(
             self.bg_music_preset and self.bg_music_preset.lower() not in ["none", "off", "disable", "disabled", "false", ""]
         )
         has_music = has_custom_music or has_preset_music
+        use_whoosh = has_music if self.transition_sfx is None else bool(self.transition_sfx)
 
         master_audio_path = os.path.join(self.work_dir, "master_audio.m4a")
+        transition_sfx = None
+        if use_whoosh and len(scene_timings) > 1:
+            cut_times = [scene_timings[i][1] for i in range(len(scene_timings) - 1)]
+            sfx_path = os.path.join(self.work_dir, "transition_whooshes.wav")
+            transition_sfx = self.audio.generate_transition_track(
+                output_path=sfx_path,
+                total_duration=total_duration,
+                transition_times=cut_times
+            )
 
         if has_music:
-            print(f"\n🎵 [4/5] Audio mixing & sidechain ducking ({self.bg_music_preset or 'custom'})...")
+            print(f"\n🎵 [4/5] Audio mixing & sidechain ducking ({'custom track' if has_custom_music else self.bg_music_preset}, {self.music_volume_db:.0f} dB)...")
             if has_custom_music:
                 bg_music_path = custom_bg_music
             else:
@@ -555,23 +699,23 @@ class VideoRenderer:
                     preset=self.bg_music_preset
                 )
 
-            # Generate transition whooshes at scene boundaries
-            cut_times = [scene_timings[i][1] for i in range(len(scene_timings) - 1)]
-            sfx_path = os.path.join(self.work_dir, "transition_whooshes.wav")
-            transition_sfx = self.audio.generate_transition_track(
-                output_path=sfx_path,
-                total_duration=total_duration,
-                transition_times=cut_times
-            )
-
             # Mix with dynamic sidechain compression and -14 LUFS mastering
             self.audio.mix_with_ducking(
                 voiceover_path=master_voice_path,
                 background_music_path=bg_music_path,
                 output_path=master_audio_path,
+                bg_volume_db=self.music_volume_db,
                 transition_sfx_path=transition_sfx
             )
             print("    ✓ Mixed with background music and mastered to -14 LUFS")
+        elif transition_sfx:
+            print("\n🎙️ [4/5] Mastering studio voiceover + transition whoosh SFX (-14 LUFS)...")
+            self.audio.mix_voice_with_sfx(
+                voiceover_path=master_voice_path,
+                transition_sfx_path=transition_sfx,
+                output_path=master_audio_path,
+            )
+            print("    ✓ Clean voiceover + transition whooshes mastered to -14 LUFS")
         else:
             print("\n🎙️ [4/5] Mastering clean studio voiceover (Zero background sound)...")
             self.audio.master_clean_voice(
@@ -581,7 +725,7 @@ class VideoRenderer:
             print("    ✓ Pristine studio voiceover mastered to -14 LUFS (100% clean, no background sound)")
 
         print(f"\n🎬 [5/5] Final assembly: Post-FX grade → subtitles → retention bar → {self.quality} encode...")
-        # Video graph: PostFX premium grade FIRST, then crisp subtitles on top, then progress bar
+        # Video graph: PostFX premium grade FIRST, then crisp subtitles & overlays on top, then progress bar
         fx_body = PostFX.build(
             self.effects,
             input_label="0:v",
@@ -592,11 +736,36 @@ class VideoRenderer:
         )
 
         burn_filters = []
-        if self.has_ass_filter:
+        if not self.subtitles_enabled:
+            print("    → Subtitles disabled by request.")
+        elif self.has_ass_filter:
             burn_filters.append(f"ass={ass_path}")
         else:
             print("    [!] Warning: Installed FFmpeg lacks 'libass' (ass filter). Video will render without burned subtitles.")
             print("        To enable styled ASS subtitles on macOS: brew install ffmpeg-full")
+
+        # Optional hook title banner (first 2.8s) and subtle channel watermark
+        if self.hook_title and self._check_ffmpeg_has_filter(self.ffmpeg_bin, "drawtext"):
+            hook_file = os.path.join(self.work_dir, "hook_title.txt")
+            with open(hook_file, "w", encoding="utf-8") as hf:
+                hf.write(self.hook_title)
+            hook_size = max(36, int(self.width * 0.056))
+            hook_y = int(self.height * 0.13)
+            burn_filters.append(
+                f"drawtext=textfile='{hook_file}':fontsize={hook_size}:fontcolor=white:"
+                f"borderw=4:bordercolor=black:box=1:boxcolor=black@0.55:boxborderw=18:"
+                f"x=(w-text_w)/2:y={hook_y}:enable='between(t,0,2.8)'"
+            )
+        if self.watermark and self._check_ffmpeg_has_filter(self.ffmpeg_bin, "drawtext"):
+            wm_file = os.path.join(self.work_dir, "watermark.txt")
+            with open(wm_file, "w", encoding="utf-8") as wf:
+                wf.write(self.watermark)
+            wm_size = max(24, int(self.width * 0.03))
+            wm_y = int(self.height * 0.05)
+            burn_filters.append(
+                f"drawtext=textfile='{wm_file}':fontsize={wm_size}:fontcolor=white@0.65:"
+                f"borderw=2:bordercolor=black@0.45:x=(w-text_w)/2:y={wm_y}"
+            )
 
         if self.progress_bar:
             bar_color = PROGRESS_BAR_CONFIG["colors_by_style"].get(

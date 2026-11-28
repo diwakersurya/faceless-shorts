@@ -1171,10 +1171,21 @@ PHOTO_VIDEO_ENGINES = {"gemini", "stickman"}
 VIDEO_ENGINES = {
     "none": "Still image + Ken Burns camera motion",
     "stickman": "Stick figures drawn by code (instant, free & offline, real motion)",
+    "stock": "Stock B-roll clips (Pexels / Pixabay, free key, real motion)",
     "fastmetal": "Local FastMetal 1.3B text-to-video (Apple Silicon, free & private, real motion)",
     "gemini": _gemini_label("video"),
 }
 DEFAULT_VIDEO_ENGINE = "none"
+
+# Vertical subtitle placement presets (ASS MarginV on 1080x1920, Alignment=2 bottom-center).
+# Keeps text clear of YouTube Shorts / Instagram Reels / TikTok bottom & side UI overlays.
+SUBTITLE_POSITIONS = {
+    "auto": {"label": "Style default", "margin_v": None},
+    "bottom": {"label": "Bottom (above platform bar)", "margin_v": 420},
+    "lower": {"label": "Lower third", "margin_v": 650},
+    "middle": {"label": "Center", "margin_v": 900},
+    "top": {"label": "Upper third", "margin_v": 1400},
+}
 
 # Camera moves a scene can ask for by name (the renderer rotates through them when a scene names none).
 SCENE_MOTIONS = [

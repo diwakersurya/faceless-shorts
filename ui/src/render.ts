@@ -3,7 +3,7 @@ import type { RenderRequest } from "./shared/schema";
 
 /** "why-foxes-hunt-20261126-091500.mp4": readable, and never the name of an earlier video. */
 export function outputName(req: RenderRequest, now = new Date()) {
-  const text = req.source === "preset" ? req.preset : req.topic;
+  const text = req.source === "preset" ? req.preset : req.source === "custom" ? (req.script?.title || "custom-short") : req.topic;
   const slug = text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
   const two = (n: number) => String(n).padStart(2, "0");
   // Local time, so the name matches the clock of the person who made it.
@@ -11,21 +11,50 @@ export function outputName(req: RenderRequest, now = new Date()) {
   return `${slug || "short"}-${stamp}.mp4`;
 }
 
+export type ExtraRenderPaths = {
+  scriptJsonPath?: string;
+  projectDir?: string;
+  musicFilePath?: string;
+  voiceoverPath?: string;
+};
+
 /** Arguments for `python`. Every value is joined to its flag with "=", so a topic that starts with "-" stays a value. */
-export function buildArgs(req: RenderRequest, outputPath: string) {
+export function buildArgs(req: RenderRequest, outputPath: string, extra: ExtraRenderPaths = {}) {
+  const sourceArg = extra.scriptJsonPath
+    ? `--script-json=${extra.scriptJsonPath}`
+    : req.source === "preset"
+      ? `--niche=${req.preset}`
+      : `--topic=${req.topic}`;
   return [
     "-m",
     "faceless_shorts",
     "generate",
-    req.source === "preset" ? `--niche=${req.preset}` : `--topic=${req.topic}`,
+    sourceArg,
     `--language=${req.language}`,
     `--voice=${req.voice}`,
     `--style=${req.subtitleStyle}`,
     `--art-style=${req.artStyle}`,
     `--transition=${req.transition}`,
     `--effects=${req.effects}`,
+    ...(req.vfx && req.vfx !== "none" ? [`--vfx=${req.vfx}`] : []),
     `--quality=${req.quality}`,
     `--music=${req.music}`,
+    ...(req.speechRate && req.speechRate !== "+0%" ? [`--rate=${req.speechRate}`] : []),
+    ...(typeof req.musicVolume === "number" && req.musicVolume !== -18 ? [`--music-volume=${req.musicVolume}`] : []),
+    ...(req.whoosh === true ? ["--whoosh"] : req.whoosh === false ? ["--no-whoosh"] : []),
+    ...(req.voiceStyle ? [`--voice-style=${req.voiceStyle}`] : []),
+    ...(req.subtitlesEnabled === false ? ["--no-subtitles"] : []),
+    ...(req.subtitlePosition && req.subtitlePosition !== "auto" ? [`--subtitle-position=${req.subtitlePosition}`] : []),
+    ...(req.wordsPerScreen ? [`--words-per-screen=${req.wordsPerScreen}`] : []),
+    ...(req.watermark ? [`--watermark=${req.watermark}`] : []),
+    ...(req.hookTitle ? [`--hook-title=${req.hookTitle}`] : []),
+    ...(req.sceneCount ? [`--scenes=${req.sceneCount}`] : []),
+    ...(req.tone ? [`--tone=${req.tone}`] : []),
+    ...(extra.musicFilePath ? [`--music-file=${extra.musicFilePath}`] : []),
+    ...(extra.voiceoverPath ? [`--voiceover=${extra.voiceoverPath}`] : []),
+    ...(extra.projectDir ? [`--project-dir=${extra.projectDir}`] : []),
+    ...(req.reuseVisuals ? ["--reuse-visuals"] : []),
+    ...(req.regenerateScenes?.length ? req.regenerateScenes.map((n) => `--regenerate-scene=${n}`) : []),
     `--script-engine=${req.scriptEngine}`,
     `--tts-engine=${req.ttsEngine}`,
     `--engine=${req.imageEngine}`,
@@ -46,7 +75,7 @@ export function parseLine(line: string, p: Progress): Progress {
   if (stage) return { ...p, stage: Number(stage[1]) };
   const total = line.match(/Scenes:\s*(\d+)/); // from the brief printed before the work starts
   if (total) return { ...p, scenes: Number(total[1]) };
-  const scene = line.match(/Scene (\d+)(?:\/(\d+))?: (?:Generating|Rendering motion)/);
+  const scene = line.match(/Scene (\d+)(?:\/(\d+))?: (?:Generating|Rendering motion|Fetching|Fitting|Reusing)/);
   if (scene) return { ...p, scene: Number(scene[1]), scenes: scene[2] ? Number(scene[2]) : p.scenes };
   return p;
 }

@@ -1,6 +1,8 @@
+import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
 import { Collapsible } from "@astryxdesign/core/Collapsible";
+import { FileInput } from "@astryxdesign/core/FileInput";
 import { Grid } from "@astryxdesign/core/Grid";
 import { HStack } from "@astryxdesign/core/HStack";
 import { Heading } from "@astryxdesign/core/Heading";
@@ -12,29 +14,78 @@ import { Switch } from "@astryxdesign/core/Switch";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { VStack } from "@astryxdesign/core/VStack";
-import { Sparkles, UserPlus } from "lucide-react";
+import { FileEdit, ListPlus, Sparkles, UserPlus } from "lucide-react";
 import { useState } from "react";
-import { type RenderRequest, renderRequest } from "../../shared/schema";
-import type { Choice, Engine, MyModel, Options } from "../api";
-import { useMyModels, useStartRender } from "../queries";
+import { type DraftScript, type RenderRequest, renderRequest } from "../../shared/schema";
+import type { Choice, Engine, MyModel, Options, SavedProject } from "../api";
+import { useDraftScript, useMyModels, useStartRender, useUploadFile } from "../queries";
+import { toast } from "../toast";
+import { StoryboardDialog } from "./StoryboardDialog";
+import { StylePreview } from "./StylePreview";
+import { VoicePreviewButton } from "./VoicePreviewButton";
 
 const STORE = "faceless-shorts-ui.form";
-const FORM_HEIGHT = 560; // the loading placeholder takes the room the form will take
+const FORM_HEIGHT = 620;
 
-/** What the form starts with: the tool's defaults, then what was chosen last time where that still exists. */
-function initial(options: Options): RenderRequest {
+const SPEECH_RATES = [
+  { value: "-15%", label: "Slow (-15%)" },
+  { value: "-5%", label: "Slightly slow (-5%)" },
+  { value: "+0%", label: "Natural (+0%)" },
+  { value: "+8%", label: "Snappy (+8%)" },
+  { value: "+15%", label: "Fast (+15%)" },
+  { value: "+25%", label: "Very fast (+25%)" },
+];
+
+const MUSIC_VOLUMES = [
+  { value: "-26", label: "Subtle (-26 dB)" },
+  { value: "-22", label: "Soft (-22 dB)" },
+  { value: "-18", label: "Balanced (-18 dB)" },
+  { value: "-14", label: "Present (-14 dB)" },
+  { value: "-10", label: "Bold (-10 dB)" },
+];
+
+const SCENE_COUNTS = [
+  { value: "auto", label: "Auto" },
+  ...[3, 4, 5, 6, 7, 8, 10].map((n) => ({ value: String(n), label: `${n} scenes` })),
+];
+
+const WORDS_PER_SCREEN = [
+  { value: "auto", label: "Style default" },
+  { value: "1", label: "1 word" },
+  { value: "2", label: "2 words" },
+  { value: "3", label: "3 words" },
+  { value: "4", label: "4 words" },
+];
+
+const BLANK_SCRIPT: DraftScript = {
+  title: "My Custom Short",
+  niche: "custom",
+  target_duration: 35,
+  hook: "",
+  scenes: [
+    { index: 1, text: "", visual_prompt: "", motion: "punch_zoom_in" },
+    { index: 2, text: "", visual_prompt: "", motion: "dramatic_zoom_out" },
+    { index: 3, text: "", visual_prompt: "", motion: "pan_left" },
+  ],
+  cta: "",
+  tags: ["#shorts"],
+};
+
+function initial(options: Options, loaded?: SavedProject | null): RenderRequest {
   let last: Partial<Record<keyof RenderRequest, unknown>> = {};
-  try {
-    last = JSON.parse(localStorage.getItem(STORE) ?? "{}") ?? {};
-  } catch {} // nothing usable was kept
+  if (loaded) {
+    last = { ...(loaded.settings as Record<string, unknown>), source: "custom", script: loaded.script, projectName: loaded.projectName, reuseVisuals: true };
+  } else {
+    try {
+      last = JSON.parse(localStorage.getItem(STORE) ?? "{}") ?? {};
+    } catch {}
+  }
   const d = options.defaults;
   const pick = (value: unknown, list: Choice[], fallback: string) => (list.some((c) => c.value === value) ? (value as string) : fallback);
-  // An engine that was installed, running or had its key last time may not be usable now.
   const usable = (value: unknown, list: Engine[], fallback: string) => pick(value, list.filter((e) => e.available), fallback);
   const language = pick(last.language, options.languages, d.language);
   const spoken = options.languages.find((l) => l.value === language);
   const ttsEngine = usable(last.ttsEngine, options.ttsEngines, d.ttsEngine);
-  // Each speech engine has its own voices: a voice kept from last time counts only if the engine has it.
   const voice =
     ttsEngine === "gemini"
       ? pick(last.voice, options.gemini.voices, options.gemini.defaultVoice)
@@ -42,33 +93,47 @@ function initial(options: Options): RenderRequest {
         ? (last.voice as string)
         : (spoken?.defaultVoice ?? d.voice);
   return {
-    source: last.source === "preset" ? "preset" : "topic",
+    source: last.source === "preset" ? "preset" : last.source === "custom" ? "custom" : "topic",
     topic: typeof last.topic === "string" ? last.topic : "",
     preset: pick(last.preset, options.presets, options.presets[0]?.value ?? ""),
+    script: (last.script as DraftScript | null | undefined) ?? null,
+    sceneCount: typeof last.sceneCount === "number" ? last.sceneCount : null,
+    tone: typeof last.tone === "string" ? last.tone : "",
     language,
     voice,
     subtitleStyle: pick(last.subtitleStyle, options.subtitleStyles, d.subtitleStyle),
     artStyle: pick(last.artStyle, options.artStyles, d.artStyle),
     transition: pick(last.transition, options.transitions, d.transition),
     effects: pick(last.effects, options.effects, d.effects),
+    vfx: pick(last.vfx, options.vfx ?? [], "none"),
     quality: pick(last.quality, options.qualities, d.quality),
     music: options.music.includes(last.music as string) ? (last.music as string) : d.music,
+    speechRate: typeof last.speechRate === "string" ? last.speechRate : "+0%",
+    musicVolume: typeof last.musicVolume === "number" ? last.musicVolume : -18,
+    whoosh: typeof last.whoosh === "boolean" ? last.whoosh : null,
+    voiceStyle: typeof last.voiceStyle === "string" ? last.voiceStyle : "",
+    subtitlesEnabled: typeof last.subtitlesEnabled === "boolean" ? last.subtitlesEnabled : true,
+    subtitlePosition: pick(last.subtitlePosition, options.subtitlePositions ?? [], "auto"),
+    wordsPerScreen: typeof last.wordsPerScreen === "number" ? last.wordsPerScreen : null,
+    watermark: typeof last.watermark === "string" ? last.watermark : "",
+    hookTitle: typeof last.hookTitle === "string" ? last.hookTitle : "",
+    customMusicFile: typeof last.customMusicFile === "string" ? last.customMusicFile : null,
+    customVoiceoverFile: typeof last.customVoiceoverFile === "string" ? last.customVoiceoverFile : null,
+    projectName: typeof last.projectName === "string" ? last.projectName : null,
+    reuseVisuals: typeof last.reuseVisuals === "boolean" ? last.reuseVisuals : false,
+    regenerateScenes: Array.isArray(last.regenerateScenes) ? (last.regenerateScenes as number[]) : [],
     scriptEngine: usable(last.scriptEngine, options.scriptEngines, d.scriptEngine),
     ttsEngine,
     imageEngine: usable(last.imageEngine, options.imageEngines, d.imageEngine),
     videoEngine: usable(last.videoEngine, options.videoEngines, d.videoEngine),
-    // Checked against your models when the form is shown: one may have been deleted since.
     featuring: Array.isArray(last.featuring) ? last.featuring.filter((id): id is string => typeof id === "string") : [],
     progressBar: typeof last.progressBar === "boolean" ? last.progressBar : true,
   };
 }
 
-/** An engine that cannot be used here stays in the list, switched off, with what it needs. */
 const engineChoices = (list: Engine[]) => list.map((e) => ({ value: e.value, label: e.label, description: e.description ?? undefined, disabled: !e.available }));
-
 const words = (key: string) => key.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
 
-/** How the chosen engines will show your models: from their photos, or only from their descriptions. */
 function featuringNote(options: Options, form: RenderRequest, chosen: MyModel[]) {
   const image = options.imageEngines.find((e) => e.value === form.imageEngine);
   const video = options.videoEngines.find((e) => e.value === form.videoEngine);
@@ -89,7 +154,6 @@ function featuringNote(options: Options, form: RenderRequest, chosen: MyModel[])
 
 type FeaturingProps = { options: Options; form: RenderRequest; chosen: string[]; onChange: (featuring: string[]) => void; onModels: () => void };
 
-/** Your models to put in every scene, or the way to make the first one. */
 function Featuring({ options, form, chosen, onChange, onModels }: FeaturingProps) {
   const models = useMyModels();
   const list = models.data?.models ?? [];
@@ -133,28 +197,87 @@ function Featuring({ options, form, chosen, onChange, onModels }: FeaturingProps
   );
 }
 
-type Props = { options: Options; busy: boolean; onSettings: () => void; onModels: () => void };
+type Props = {
+  options: Options;
+  busy: boolean;
+  loadedProject?: SavedProject | null;
+  onClearProject?: () => void;
+  onSettings: () => void;
+  onModels: () => void;
+};
 
-function Form({ options, busy, onSettings, onModels }: Props) {
+function Form({ options, busy, loadedProject, onClearProject, onSettings, onModels }: Props) {
   const start = useStartRender();
-  const known = useMyModels().data?.models;
-  const [form, setForm] = useState(() => initial(options));
+  const draft = useDraftScript();
+  const upload = useUploadFile();
+  const known = useMyModels().data?.models ?? [];
+  const [form, setForm] = useState(() => initial(options, loadedProject));
+  const [editorOpen, setEditorOpen] = useState(Boolean(loadedProject));
+  const [musicLabel, setMusicLabel] = useState<string | null>(null);
+  const [voiceoverLabel, setVoiceoverLabel] = useState<string | null>(null);
+
   const update = (patch: Partial<RenderRequest>) => {
     const next = { ...form, ...patch };
     setForm(next);
-    localStorage.setItem(STORE, JSON.stringify(next)); // the choices are still there after a reload
+    // Keep lightweight preferences in localStorage (skip large inline custom scripts).
+    const { script: _s, projectName: _p, reuseVisuals: _r, regenerateScenes: _rs, ...prefs } = next;
+    localStorage.setItem(STORE, JSON.stringify(prefs));
   };
-  // A model kept from last time that has been deleted since is left out, not sent.
-  const chosen = known ? form.featuring.filter((id) => known.some((m) => m.id === id)) : [];
+
+  const chosen = known.length ? form.featuring.filter((id) => known.some((m) => m.id === id)) : [];
   const parsed = renderRequest.safeParse({ ...form, featuring: chosen });
-  // An empty topic is not shown as an error; the button simply stays off until there is one.
   const topicError = form.source === "topic" && form.topic.trim() && !parsed.success ? parsed.error.issues.find((i) => i.path[0] === "topic")?.message : undefined;
-  const ready = parsed.success && !busy && !start.isPending;
+  const ready = parsed.success && !start.isPending;
   const language = options.languages.find((l) => l.value === form.language);
   const voices = form.ttsEngine === "gemini" ? options.gemini.voices : options.voices.filter((v) => language?.voices.includes(v.value));
+  const selectedSubStyle = options.subtitleStyles.find((s) => s.value === form.subtitleStyle);
   const set = (field: keyof RenderRequest) => (value: string | null) => {
     if (value !== null) update({ [field]: value });
   };
+
+  const handleDraft = async () => {
+    if (form.source === "custom") {
+      if (!form.script) update({ script: BLANK_SCRIPT });
+      setEditorOpen(true);
+      return;
+    }
+    if (form.source === "topic" && form.topic.trim().length < 3) {
+      toast.bad("Describe the topic in at least 3 characters first.");
+      return;
+    }
+    try {
+      const res = await draft.mutateAsync({
+        source: form.source,
+        topic: form.topic,
+        preset: form.preset,
+        language: form.language,
+        scriptEngine: form.scriptEngine,
+        sceneCount: form.sceneCount ?? null,
+        tone: form.tone || "",
+        stickman: form.videoEngine === "stickman",
+      });
+      update({ source: "custom", script: res.script });
+      setEditorOpen(true);
+    } catch {}
+  };
+
+  const uploadAudio = async (picked: File | File[] | null, kind: "music" | "voiceover") => {
+    const file = Array.isArray(picked) ? picked[0] : picked;
+    if (!file) return;
+    try {
+      const res = await upload.mutateAsync(file);
+      if (kind === "music") {
+        update({ customMusicFile: res.file });
+        setMusicLabel(res.name);
+        toast.ok(`Custom music ready: ${res.name}`);
+      } else {
+        update({ customVoiceoverFile: res.file });
+        setVoiceoverLabel(res.name);
+        toast.ok(`Custom voiceover ready: ${res.name}`);
+      }
+    } catch {}
+  };
+
   return (
     <Card>
       <form
@@ -163,25 +286,122 @@ function Form({ options, busy, onSettings, onModels }: Props) {
         }}
       >
         <VStack gap={4}>
-          <Heading level={2}>New short</Heading>
-          <SegmentedControl label="What the short is about" layout="fill" value={form.source} onChange={(source) => update({ source: source as RenderRequest["source"] })}>
+          <HStack justify="between" align="center">
+            <Heading level={2}>{form.projectName ? "Edit short" : "New short"}</Heading>
+            {form.projectName && (
+              <Button
+                label="Start fresh"
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  onClearProject?.();
+                  update({ projectName: null, reuseVisuals: false, regenerateScenes: [], source: "topic", script: null });
+                }}
+              />
+            )}
+          </HStack>
+
+          <SegmentedControl
+            label="What the short is about"
+            layout="fill"
+            value={form.source}
+            onChange={(source) => update({ source: source as RenderRequest["source"] })}
+          >
             <SegmentedControlItem value="topic" label="Your topic" />
-            <SegmentedControlItem value="preset" label="Ready-made script" />
+            <SegmentedControlItem value="preset" label="Preset" />
+            <SegmentedControlItem value="custom" label="Storyboard" />
           </SegmentedControl>
-          {form.source === "topic" ? (
-            <TextInput
-              label="Topic"
-              value={form.topic}
-              onChange={(topic) => update({ topic })}
-              placeholder="Why foxes hunt at dawn"
-              description="A script is written for it. Any language from the list below works."
-              autoComplete="off"
-              status={topicError ? { type: "error", message: topicError } : undefined}
-            />
-          ) : (
-            <Selector label="Ready-made script" options={options.presets.map((p) => ({ value: p.value, label: p.label, description: `${p.scenes} scenes` }))} value={form.preset} onChange={set("preset")} />
+
+          {form.source === "topic" && (
+            <VStack gap={3}>
+              <TextInput
+                label="Topic"
+                value={form.topic}
+                onChange={(topic) => update({ topic })}
+                placeholder="Why foxes hunt at dawn"
+                description="A script is written for it, or click Draft & edit scenes to review first."
+                autoComplete="off"
+                status={topicError ? { type: "error", message: topicError } : undefined}
+              />
+              <Grid columns={2} gap={3}>
+                <Selector
+                  label="Length"
+                  options={SCENE_COUNTS}
+                  value={form.sceneCount ? String(form.sceneCount) : "auto"}
+                  onChange={(v) => update({ sceneCount: v && v !== "auto" ? Number(v) : null })}
+                />
+                <TextInput
+                  label="Tone / direction"
+                  value={form.tone || ""}
+                  onChange={(tone) => update({ tone })}
+                  placeholder="e.g. funny, dark, tutorial"
+                />
+              </Grid>
+              <Button
+                label="Draft & edit scenes first"
+                variant="secondary"
+                size="sm"
+                icon={<FileEdit size={15} />}
+                isLoading={draft.isPending}
+                onClick={handleDraft}
+              />
+            </VStack>
           )}
+
+          {form.source === "preset" && (
+            <VStack gap={2}>
+              <Selector
+                label="Ready-made script"
+                options={options.presets.map((p) => ({ value: p.value, label: p.label, description: `${p.scenes} scenes` }))}
+                value={form.preset}
+                onChange={set("preset")}
+              />
+              <Button
+                label="Customize this preset's scenes"
+                variant="ghost"
+                size="sm"
+                icon={<FileEdit size={14} />}
+                isLoading={draft.isPending}
+                onClick={handleDraft}
+              />
+            </VStack>
+          )}
+
+          {form.source === "custom" && (
+            <Card padding={3}>
+              <VStack gap={2}>
+                <HStack justify="between" align="center">
+                  <Text weight="medium">{form.script?.title || "Custom storyboard"}</Text>
+                  <Badge label={`${form.script?.scenes.length ?? 0} scenes`} variant="info" />
+                </HStack>
+                <Text size="sm" color="secondary">
+                  Edit every scene's text, visual prompt, motion, stickman action, seed, or upload custom scene clips.
+                </Text>
+                <HStack gap={2}>
+                  <Button
+                    label={form.script ? "Edit storyboard" : "Create storyboard"}
+                    variant="secondary"
+                    size="sm"
+                    icon={<FileEdit size={14} />}
+                    onClick={handleDraft}
+                  />
+                </HStack>
+                {form.projectName && (
+                  <Switch
+                    label="Reuse existing visuals (fast re-assemble)"
+                    value={Boolean(form.reuseVisuals)}
+                    onChange={(reuseVisuals) => update({ reuseVisuals })}
+                    labelPosition="start"
+                    labelSpacing="spread"
+                    width="100%"
+                  />
+                )}
+              </VStack>
+            </Card>
+          )}
+
           <Featuring options={options} form={form} chosen={chosen} onChange={(featuring) => update({ featuring })} onModels={onModels} />
+
           <VStack gap={3}>
             <VStack gap={1}>
               <Text weight="medium">Who makes each part</Text>
@@ -202,7 +422,6 @@ function Form({ options, busy, onSettings, onModels }: Props) {
               options={engineChoices(options.ttsEngines)}
               value={form.ttsEngine}
               onChange={(value) => {
-                // The voices belong to the engine: changing it moves to that engine's usual voice.
                 if (value) update({ ttsEngine: value, voice: value === "gemini" ? options.gemini.defaultVoice : (language?.defaultVoice ?? options.defaults.voice) });
               }}
             />
@@ -215,13 +434,14 @@ function Form({ options, busy, onSettings, onModels }: Props) {
             />
             <Selector
               label="Video"
-              description="A real-motion clip for each scene, instead of camera moves on its image: stick figures drawn by code, or a video model."
+              description="A real-motion clip for each scene: stick figures, stock B-roll, or a video model."
               options={engineChoices(options.videoEngines)}
               value={form.videoEngine}
               onChange={set("videoEngine")}
             />
             {(!options.fastmetal.available || !options.gemini.configured) && <Button label="Set up FastMetal and Gemini" variant="ghost" size="sm" onClick={onSettings} />}
           </VStack>
+
           <Grid columns={2} gap={3}>
             <Selector
               label="Language"
@@ -229,38 +449,182 @@ function Form({ options, busy, onSettings, onModels }: Props) {
               value={form.language}
               onChange={(value) => {
                 const next = options.languages.find((l) => l.value === value);
-                // Each language has its own voices: keep the voice if it speaks the new language, else take that language's usual one.
-                // Gemini's voices speak every language, so they stay.
                 if (next) update({ language: next.value, voice: form.ttsEngine === "gemini" || next.voices.includes(form.voice) ? form.voice : next.defaultVoice });
               }}
             />
-            <Selector label="Voice" options={voices} value={form.voice} onChange={set("voice")} />
+            <HStack gap={1} align="end">
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <Selector label="Voice" options={voices} value={form.voice} onChange={set("voice")} />
+              </div>
+              <VoicePreviewButton
+                engine={form.ttsEngine}
+                voice={form.voice}
+                language={form.language}
+                rate={form.speechRate}
+                voiceStyle={form.voiceStyle}
+              />
+            </HStack>
           </Grid>
+
+          {form.ttsEngine === "gemini" && (
+            <TextInput
+              label="Voice delivery style (optional)"
+              value={form.voiceStyle || ""}
+              onChange={(voiceStyle) => update({ voiceStyle })}
+              placeholder="e.g. calm storyteller, whispering, energetic"
+            />
+          )}
+
           <Selector label="Art style" options={options.artStyles} value={form.artStyle} onChange={set("artStyle")} hasSearch />
-          <Selector label="Subtitle style" options={options.subtitleStyles} value={form.subtitleStyle} onChange={set("subtitleStyle")} />
-          <Collapsible trigger={<Text weight="medium">More options</Text>} defaultIsOpen={false}>
+
+          <VStack gap={2}>
+            <Selector label="Subtitle style" options={options.subtitleStyles} value={form.subtitleStyle} onChange={set("subtitleStyle")} />
+            <StylePreview
+              styleChoice={selectedSubStyle}
+              enabled={form.subtitlesEnabled !== false}
+              position={form.subtitlePosition || "auto"}
+              wordsPerScreen={form.wordsPerScreen ?? null}
+            />
+          </VStack>
+
+          <Collapsible trigger={<Text weight="medium">More options (captions, audio, VFX, branding)</Text>} defaultIsOpen={false}>
             <VStack gap={4} paddingBlockStart={3}>
               <Grid columns={2} gap={3}>
                 <Selector label="Scene transition" options={options.transitions} value={form.transition} onChange={set("transition")} />
                 <Selector label="Colour grade" options={options.effects} value={form.effects} onChange={set("effects")} />
+                <Selector label="VFX overlay" options={options.vfx ?? []} value={form.vfx || "none"} onChange={set("vfx")} />
                 <Selector label="Quality" options={options.qualities} value={form.quality} onChange={set("quality")} />
+                <Selector label="Speech speed" options={SPEECH_RATES} value={form.speechRate || "+0%"} onChange={set("speechRate")} />
                 <Selector label="Background music" options={options.music.map((m) => ({ value: m, label: words(m) }))} value={form.music} onChange={set("music")} />
+                <Selector
+                  label="Music volume"
+                  options={MUSIC_VOLUMES}
+                  value={String(form.musicVolume ?? -18)}
+                  onChange={(v) => v && update({ musicVolume: Number(v) })}
+                />
+                <Selector
+                  label="Subtitle position"
+                  options={options.subtitlePositions ?? []}
+                  value={form.subtitlePosition || "auto"}
+                  onChange={set("subtitlePosition")}
+                />
+                <Selector
+                  label="Words per caption"
+                  options={WORDS_PER_SCREEN}
+                  value={form.wordsPerScreen ? String(form.wordsPerScreen) : "auto"}
+                  onChange={(v) => update({ wordsPerScreen: v && v !== "auto" ? Number(v) : null })}
+                />
               </Grid>
-              <Switch label="Progress bar along the bottom" value={form.progressBar} onChange={(progressBar) => update({ progressBar })} labelPosition="start" labelSpacing="spread" width="100%" />
+
+              <Grid columns={2} gap={3}>
+                <TextInput
+                  label="Opening hook title (2.8s)"
+                  value={form.hookTitle || ""}
+                  onChange={(hookTitle) => update({ hookTitle })}
+                  placeholder="Optional top banner"
+                />
+                <TextInput
+                  label="Channel watermark"
+                  value={form.watermark || ""}
+                  onChange={(watermark) => update({ watermark })}
+                  placeholder="e.g. @yourhandle"
+                />
+              </Grid>
+
+              <VStack gap={2}>
+                <HStack gap={2} align="end">
+                  <FileInput
+                    label={musicLabel ? `Custom music: ${musicLabel}` : "Custom background music (MP3/WAV)"}
+                    accept="audio/mpeg,audio/wav,audio/mp4,audio/ogg"
+                    value={null}
+                    onChange={(files) => uploadAudio(files, "music")}
+                  />
+                  {form.customMusicFile && (
+                    <Button label="Clear" size="sm" variant="ghost" onClick={() => { update({ customMusicFile: null }); setMusicLabel(null); }} />
+                  )}
+                </HStack>
+                <HStack gap={2} align="end">
+                  <FileInput
+                    label={voiceoverLabel ? `Custom voiceover: ${voiceoverLabel}` : "Use your own recorded voiceover (MP3/WAV/M4A)"}
+                    accept="audio/mpeg,audio/wav,audio/mp4,audio/ogg"
+                    value={null}
+                    onChange={(files) => uploadAudio(files, "voiceover")}
+                  />
+                  {form.customVoiceoverFile && (
+                    <Button label="Clear" size="sm" variant="ghost" onClick={() => { update({ customVoiceoverFile: null }); setVoiceoverLabel(null); }} />
+                  )}
+                </HStack>
+              </VStack>
+
+              <Switch
+                label="Burn subtitles into video"
+                value={form.subtitlesEnabled !== false}
+                onChange={(subtitlesEnabled) => update({ subtitlesEnabled })}
+                labelPosition="start"
+                labelSpacing="spread"
+                width="100%"
+              />
+              <Switch
+                label="Transition whoosh sound effects"
+                value={form.whoosh === true || (form.whoosh === null && (form.music !== "none" || Boolean(form.customMusicFile)))}
+                onChange={(whoosh) => update({ whoosh })}
+                labelPosition="start"
+                labelSpacing="spread"
+                width="100%"
+              />
+              <Switch
+                label="Progress bar along the bottom"
+                value={form.progressBar}
+                onChange={(progressBar) => update({ progressBar })}
+                labelPosition="start"
+                labelSpacing="spread"
+                width="100%"
+              />
             </VStack>
           </Collapsible>
+
           <Button
-            label="Make the short"
+            label={busy ? "Add to render queue" : form.reuseVisuals ? "Fast re-assemble short" : "Make the short"}
             type="submit"
             variant="primary"
-            icon={<Sparkles size={16} />}
+            icon={busy ? <ListPlus size={16} /> : <Sparkles size={16} />}
             width="100%"
             isDisabled={!ready}
             isLoading={start.isPending}
-            tooltip={busy ? "A short is being made already. Wait for it or stop it first." : undefined}
           />
         </VStack>
       </form>
+
+      {editorOpen && (
+        <StoryboardDialog
+          options={options}
+          models={known}
+          defaultVideoEngine={form.videoEngine}
+          initialScript={form.script ?? BLANK_SCRIPT}
+          hasSavedProject={Boolean(form.projectName)}
+          initialRegenerateScenes={form.regenerateScenes ?? []}
+          onClose={() => setEditorOpen(false)}
+          onSave={(script, regenerateScenes) => {
+            update({ source: "custom", script, regenerateScenes });
+            setEditorOpen(false);
+            toast.ok("Storyboard saved");
+          }}
+          onRenderNow={(script, regenerateScenes, reuseVisuals) => {
+            const next: RenderRequest = {
+              ...form,
+              source: "custom",
+              script,
+              regenerateScenes,
+              reuseVisuals,
+              featuring: chosen,
+            };
+            update({ source: "custom", script, regenerateScenes, reuseVisuals });
+            setEditorOpen(false);
+            const check = renderRequest.safeParse(next);
+            if (check.success) start.mutate(check.data);
+          }}
+        />
+      )}
     </Card>
   );
 }

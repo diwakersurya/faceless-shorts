@@ -1172,10 +1172,11 @@ class GeminiClient:
         except ValueError:
             return None
 
-    def speak(self, text: str, voice: str) -> Optional[bytes]:
+    def speak(self, text: str, voice: str, style_prompt: str = "") -> Optional[bytes]:
         """Speak *text* in one of Gemini's voices. Returns the sound as raw samples
         (GEMINI_TTS_RATE per second, one channel, 16-bit), or None on any failure."""
-        data = self._media("tts", text, {}, generation_config={"speech_config": [{"voice": voice}]})
+        spoken_input = f"Say {style_prompt.strip()}: {text}" if (style_prompt and style_prompt.strip()) else text
+        data = self._media("tts", spoken_input, {}, generation_config={"speech_config": [{"voice": voice}]})
         if not data:
             return None
         try:

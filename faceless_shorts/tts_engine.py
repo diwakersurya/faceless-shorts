@@ -239,12 +239,13 @@ class GeminiTTS:
     def __init__(self, voice: str = DEFAULT_GEMINI_VOICE):
         self.voice = resolve_gemini_voice(voice)
 
-    def synthesize(self, text: str, output_path: str) -> Optional[AudioResult]:
+    def synthesize(self, text: str, output_path: str, style_prompt: str = "") -> Optional[AudioResult]:
         """Speak *text* into a WAV file, with a time for each of its words. None when Gemini does not deliver."""
         from faceless_shorts.integrations import GeminiClient, GEMINI_TTS_RATE
 
         client = GeminiClient()
-        samples = client.speak(re.sub(r"[\*\_#\[\]\(\)]", "", text).strip(), self.voice)
+        cleaned = re.sub(r"[\*\_#\[\]\(\)]", "", text).strip()
+        samples = client.speak(cleaned, self.voice, style_prompt=style_prompt)
         if not samples:
             return None
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
@@ -272,3 +273,38 @@ class GeminiTTS:
 def resolve_gemini_voice(name: Optional[str]) -> str:
     """The Gemini voice called *name*, whatever its capitals; the default voice for any other name."""
     return next((v for v in GEMINI_VOICES if v.lower() == (name or "").lower()), DEFAULT_GEMINI_VOICE)
+
+
+def probe_audio_duration(audio_path: str) -> float:
+    """Return audio duration in seconds via ffprobe, or a safe fallback."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        val = float((out.stdout or "").strip())
+        if val > 0:
+            return val
+    except Exception:
+        pass
+    return 15.0
+
+
+def load_custom_voiceover(audio_path: str, full_text: str, language: str = "en") -> AudioResult:
+    """Load a user-recorded voiceover file and align script words to it via Gemini/Whisper or estimation."""
+    duration = probe_audio_duration(audio_path)
+    heard: Optional[List[Tuple[str, float, float]]] = None
+    try:
+        from faceless_shorts.integrations import GeminiClient
+        if GeminiClient.key_source() is not None:
+            with open(audio_path, "rb") as handle:
+                heard = GeminiClient().word_times(handle.read())
+    except Exception:
+        heard = None
+    if heard:
+        words = align_words(full_text, heard, 0.0, duration)
+    else:
+        words = spread_words(full_text, 0.0, duration)
+    return AudioResult(audio_path=audio_path, duration_sec=duration, words=words, text=full_text)

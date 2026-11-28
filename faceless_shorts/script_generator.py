@@ -21,6 +21,11 @@ class Scene:
     stick: Optional[Dict] = None
     # Your models in this scene, by id or name (my_models.py). None: the ones the short features; []: none.
     featuring: Optional[List[str]] = None
+    # Optional per-scene overrides for exact director control.
+    seed: Optional[int] = None
+    video_engine: Optional[str] = None
+    media_path: Optional[str] = None
+    headline: Optional[str] = None
 
 @dataclass
 class VideoScript:
@@ -46,7 +51,14 @@ class VideoScript:
 
     @classmethod
     def from_dict(cls, data: Dict) -> 'VideoScript':
-        scenes = [Scene(**s) for s in data.get("scenes", [])]
+        allowed = {f.name for f in Scene.__dataclass_fields__.values()}
+        scenes = []
+        for idx, raw in enumerate(data.get("scenes", []), start=1):
+            clean = {k: v for k, v in raw.items() if k in allowed}
+            clean.setdefault("index", idx)
+            clean.setdefault("text", "")
+            clean.setdefault("visual_prompt", "")
+            scenes.append(Scene(**clean))
         return cls(
             title=data.get("title", "Untitled Short"),
             niche=data.get("niche", "general"),
@@ -705,7 +717,13 @@ def _knowledge_lookup(topic: str) -> Optional[VideoScript]:
             )
     return None
 
-def _llm_lookup(topic: str, language: str) -> Optional[VideoScript]:
+def _llm_lookup(
+    topic: str,
+    language: str,
+    scene_count: Optional[int] = None,
+    tone: str = "",
+    for_stickman: bool = False,
+) -> Optional[VideoScript]:
     """Ask a free local LLM (Ollama / OpenAI-compatible) for a fresh script.
     Returns None instantly when no LLM is reachable."""
     try:
@@ -713,18 +731,40 @@ def _llm_lookup(topic: str, language: str) -> Optional[VideoScript]:
         writer = LLMScriptWriter()
         if not writer.available():
             return None
+        extra_prompt = LLM_SYSTEM_PROMPT + _direction_instructions(scene_count, tone, for_stickman)
         data = writer.write_script(
             topic=topic,
             language=language,
-            system_prompt=LLM_SYSTEM_PROMPT,
+            system_prompt=extra_prompt,
         )
         return _script_from_data(data, topic)
     except Exception:
         return None
 
+
+def _direction_instructions(scene_count: Optional[int], tone: str, for_stickman: bool) -> str:
+    notes = []
+    if scene_count:
+        notes.append(f"Write exactly {max(2, min(12, int(scene_count)))} scenes.")
+    if tone and tone.strip():
+        notes.append(f"Tone and creative direction: {tone.strip()}.")
+    if for_stickman:
+        from faceless_shorts import stickman
+        actions = ", ".join(stickman.ACTIONS.keys())
+        chars = ", ".join(stickman.CHARACTERS.keys())
+        notes.append(
+            "For EVERY scene include a 'stick' object with keys: "
+            f"'action' (one of: {actions}), optional 'other' (second figure action from the same list), "
+            f"optional 'character' and 'other_character' (one of: {chars}), "
+            "optional short 'bubble' (1-4 chars like '?' or 'NO'), optional 'other_bubble', "
+            "and 'headline' (short 2-5 word punchy title for the top of the frame)."
+        )
+    return ("\n\nAdditional direction:\n- " + "\n- ".join(notes)) if notes else ""
+
+
 def _script_from_data(data: Optional[Dict], topic: str) -> Optional[VideoScript]:
     """Turn the JSON a language model wrote (the shape LLM_SYSTEM_PROMPT asks for) into a script.
-    None when it is not usable: no scenes, or fewer than three with spoken text."""
+    None when it is not usable: no scenes, or fewer than two with spoken text."""
     try:
         if not data or not data.get("scenes"):
             return None
@@ -734,11 +774,13 @@ def _script_from_data(data: Optional[Dict], topic: str) -> Optional[VideoScript]
                 text=s.get("text", ""),
                 visual_prompt=s.get("visual_prompt", ""),
                 motion=s.get("motion", "punch_zoom_in"),
+                stick=s.get("stick") if isinstance(s.get("stick"), dict) else None,
+                headline=s.get("headline") or None,
             )
             for i, s in enumerate(data["scenes"])
             if s.get("text")
         ]
-        if len(scenes) < 3:
+        if len(scenes) < 2:
             return None
         key = re.sub(r"[^\w\s]", "", topic).replace(" ", "_").lower()
         return VideoScript(
@@ -753,7 +795,13 @@ def _script_from_data(data: Optional[Dict], topic: str) -> Optional[VideoScript]
     except Exception:
         return None
 
-def _gemini_lookup(topic: str, language: str) -> Optional[VideoScript]:
+def _gemini_lookup(
+    topic: str,
+    language: str,
+    scene_count: Optional[int] = None,
+    tone: str = "",
+    for_stickman: bool = False,
+) -> Optional[VideoScript]:
     """Ask Gemini (online) for a fresh script. None when there is no key or no usable script comes back."""
     from faceless_shorts.config import LANGUAGES, SCENE_MOTIONS
     from faceless_shorts.integrations import GeminiClient
@@ -763,11 +811,18 @@ def _gemini_lookup(topic: str, language: str) -> Optional[VideoScript]:
         f"Write the script for a short vertical video about: {topic}\n"
         f"Write the title, the hook, every scene's text and the cta in {spoken}. Write every visual_prompt in English.\n"
         f"Give each scene a different motion from this list: {', '.join(SCENE_MOTIONS)}."
+        f"{_direction_instructions(scene_count, tone, for_stickman)}"
     )
     return _script_from_data(GeminiClient().write_json(prompt, system=LLM_SYSTEM_PROMPT), topic)
 
 def create_or_get_script(
-    niche_or_topic: str, language: str = "en", use_llm: bool = True, script_engine: str = "auto"
+    niche_or_topic: str,
+    language: str = "en",
+    use_llm: bool = True,
+    script_engine: str = "auto",
+    scene_count: Optional[int] = None,
+    tone: str = "",
+    for_stickman: bool = False,
 ) -> VideoScript:
     """
     Unified resolver:
@@ -782,7 +837,9 @@ def create_or_get_script(
 
     # 0. Asked for by name, so it goes first; the steps below still give a script when Gemini does not.
     if script_engine == "gemini":
-        gemini_script = _gemini_lookup(niche_or_topic, lang)
+        gemini_script = _gemini_lookup(
+            niche_or_topic, lang, scene_count=scene_count, tone=tone, for_stickman=for_stickman
+        )
         if gemini_script:
             return gemini_script
         print("    [!] Gemini did not write the script; the built-in script writer is used instead.")
@@ -799,9 +856,14 @@ def create_or_get_script(
 
     # 3. Optional free LLM (returns instantly when unreachable)
     if use_llm:
-        llm_script = _llm_lookup(niche_or_topic, lang)
+        llm_script = _llm_lookup(
+            niche_or_topic, lang, scene_count=scene_count, tone=tone, for_stickman=for_stickman
+        )
         if llm_script:
             return llm_script
 
     # 4. Dynamic viral script builder
-    return DynamicScriptBuilder.build(topic=niche_or_topic, niche=key, language=lang)
+    script = DynamicScriptBuilder.build(topic=niche_or_topic, niche=key, language=lang)
+    if scene_count and 2 <= scene_count < len(script.scenes):
+        script.scenes = script.scenes[:scene_count]
+    return script

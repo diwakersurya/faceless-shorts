@@ -9,20 +9,19 @@ import { Timestamp } from "@astryxdesign/core/Timestamp";
 import { Token } from "@astryxdesign/core/Token";
 import { VStack } from "@astryxdesign/core/VStack";
 import * as stylex from "@stylexjs/stylex";
-import { Copy, Download, FileX, Trash2 } from "lucide-react";
+import { Copy, Download, FileEdit, FileX, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { type Video, api } from "../api";
+import { type SavedProject, type Video, api } from "../api";
 import { copyText } from "../clipboard";
 import { useDeleteVideo } from "../queries";
 import { go } from "../route";
+import { toast } from "../toast";
 import { megabytes } from "./Library";
 
 const NARROW = "@media (max-width: 760px)";
 
 const s = stylex.create({
-  // The video beside what to post with it; one under the other on a phone.
   body: { display: "grid", gridTemplateColumns: { default: "minmax(0, 300px) minmax(0, 1fr)", [NARROW]: "minmax(0, 1fr)" }, gap: "var(--spacing-5)", padding: "var(--spacing-4)" },
-  // On a phone the video is kept shorter than the screen, so the caption and the buttons under it are within reach.
   player: {
     width: { default: "100%", [NARROW]: "auto" },
     maxHeight: { default: "none", [NARROW]: "60dvh" },
@@ -38,10 +37,25 @@ const onOpenChange = (open: boolean) => {
   if (!open) close();
 };
 
-function Details({ video }: { video: Video }) {
+function Details({ video, onEditProject }: { video: Video; onEditProject?: (project: SavedProject) => void }) {
   const remove = useDeleteVideo();
   const [confirming, setConfirming] = useState(false);
+  const [loadingProject, setLoadingProject] = useState(false);
   const hashtags = video.tags.map((t) => "#" + t).join(" ");
+
+  const openEditor = async () => {
+    setLoadingProject(true);
+    try {
+      const project = await api.videoProject(video.name);
+      close();
+      onEditProject?.(project);
+    } catch (e) {
+      toast.bad(e instanceof Error ? e.message : "Could not load project.");
+    } finally {
+      setLoadingProject(false);
+    }
+  };
+
   return (
     <div {...stylex.props(s.body)}>
       <video {...stylex.props(s.player)} src={api.videoUrl(video.name)} poster={api.posterUrl(video.name)} controls autoPlay playsInline />
@@ -74,8 +88,13 @@ function Details({ video }: { video: Video }) {
           <MetadataListItem label="Size">{megabytes(video.size)}</MetadataListItem>
           <MetadataListItem label="File">{video.name}</MetadataListItem>
         </MetadataList>
-        <HStack gap={2} justify="between">
-          <Button label="Download" variant="primary" icon={<Download size={16} />} href={api.downloadUrl(video.name)} />
+        <HStack gap={2} justify="between" wrap="wrap">
+          <HStack gap={2}>
+            <Button label="Download" variant="primary" icon={<Download size={16} />} href={api.downloadUrl(video.name)} />
+            {video.hasProject && onEditProject && (
+              <Button label="Edit & Re-render" variant="secondary" icon={<FileEdit size={16} />} isLoading={loadingProject} onClick={openEditor} />
+            )}
+          </HStack>
           <Button label="Delete" variant="destructive" icon={<Trash2 size={16} />} onClick={() => setConfirming(true)} />
         </HStack>
       </VStack>
@@ -93,13 +112,13 @@ function Details({ video }: { video: Video }) {
 }
 
 /** One short, opened from the list or from a link. `videos` undefined = the list is still loading. */
-export function VideoDialog({ name, videos }: { name: string; videos: Video[] | undefined }) {
+export function VideoDialog({ name, videos, onEditProject }: { name: string; videos: Video[] | undefined; onEditProject?: (project: SavedProject) => void }) {
   const video = videos?.find((v) => v.name === name);
   return (
     <Dialog isOpen onOpenChange={onOpenChange} purpose="info" width={820} maxHeight="90dvh">
       <DialogHeader title={video?.title ?? name} onOpenChange={onOpenChange} />
       {video ? (
-        <Details key={video.name} video={video} />
+        <Details key={video.name} video={video} onEditProject={onEditProject} />
       ) : videos ? (
         <EmptyState icon={<FileX size={32} />} title="This short is no longer there" description="It may have been deleted." actions={<Button label="Back to your shorts" onClick={close} />} />
       ) : null}

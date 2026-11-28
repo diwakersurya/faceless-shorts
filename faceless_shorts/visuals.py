@@ -96,15 +96,24 @@ class VisualManager:
         if self.engine in MFLUX_MODELS:
             from faceless_shorts.integrations import MfluxClient
             style_config = ART_STYLES.get(self.art_style, ART_STYLES["hyperreal"])
+            full_prompt = f"{photo_prompt if photos else prompt}, {style_config['prompt_suffix']}"
+            portrait = self.height >= self.width
+            # Local mflux takes ~35s per image; cache by prompt/model/seed/photos so re-renders reuse them.
+            key = "|".join([self.engine, full_prompt, str(portrait), str(chosen_seed), *map(_file_hash, photos)])
+            cached = os.path.join(self.cache_dir, f"{self.engine}_{hashlib.sha1(key.encode()).hexdigest()[:16]}.jpg")
+            if os.path.exists(cached):
+                shutil.copyfile(cached, output_path)
+                return output_path
             path = MfluxClient(self.engine).generate(
-                prompt=f"{photo_prompt if photos else prompt}, {style_config['prompt_suffix']}",
-                output_path=output_path,
+                prompt=full_prompt,
+                output_path=cached,
                 seed=chosen_seed,
-                portrait=self.height >= self.width,
+                portrait=portrait,
                 refs=photos,
             )
-            if path:
-                return path
+            if path and os.path.exists(cached):
+                shutil.copyfile(cached, output_path)
+                return output_path
             if not fallback:
                 return None
             print("    [!] Local image model unavailable, falling back to Pollinations Flux.")
@@ -185,7 +194,11 @@ class VisualManager:
         def _one(job: Dict) -> Dict[str, str]:
             try:
                 return {job["output_path"]: self.generate_ai_image(
-                    prompt=job["prompt"], output_path=job["output_path"], models=job.get("models", ()))}
+                    prompt=job["prompt"],
+                    output_path=job["output_path"],
+                    seed=job.get("seed"),
+                    models=job.get("models", ()),
+                )}
             except Exception:
                 return {job["output_path"]: self.generate_procedural_background(
                     output_path=job["output_path"], topic=job.get("prompt", ""))}
@@ -291,6 +304,19 @@ class VisualManager:
         full_prompt = f"{prompt}, {style_config['prompt_suffix']}"
         portrait = height >= width
 
+        if engine == "stock":
+            from faceless_shorts.integrations import StockBRoll
+            # Use first 6 meaningful words of the visual prompt as a stock search query.
+            query = " ".join(prompt.replace(",", " ").split()[:6])
+            key = f"stock|{query}|{portrait}"
+            raw_path = os.path.join(self.cache_dir, f"stock_{hashlib.sha1(key.encode()).hexdigest()[:16]}.mp4")
+            if not os.path.exists(raw_path):
+                downloaded = StockBRoll.search_clip(query, orientation="portrait" if portrait else "landscape")
+                if not downloaded or not os.path.exists(downloaded):
+                    return None
+                shutil.copyfile(downloaded, raw_path)
+            return self.fit_custom_video_clip(raw_path, output_video_path, duration, fps=fps, width=width, height=height)
+
         if engine == "gemini":
             client = GeminiClient()
             full_prompt += ". No captions or text on screen."  # the subtitles are added later, by this tool
@@ -336,6 +362,47 @@ class VisualManager:
             subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError) as e:
             print(f"    [!] Could not fit the generated clip ({e}).")
+            return None
+        return output_video_path
+
+    def fit_custom_video_clip(
+        self,
+        source_video_path: str,
+        output_video_path: str,
+        duration: float,
+        fps: Optional[int] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+    ) -> Optional[str]:
+        """Fit a user-provided or stock video clip to canvas, fps, art grade, and exact duration (looping if shorter)."""
+        if not source_video_path or not os.path.exists(source_video_path):
+            return None
+        fps = fps or self.fps
+        width = width or self.width
+        height = height or self.height
+        style_config = ART_STYLES.get(self.art_style, ART_STYLES["hyperreal"])
+        art_filter = style_config.get("ffmpeg_filter", "eq=contrast=1.05:saturation=1.05")
+        fit_filter = (
+            f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
+            f"crop={width}:{height},fps={fps},{art_filter},format=yuv420p"
+        )
+        os.makedirs(os.path.dirname(os.path.abspath(output_video_path)), exist_ok=True)
+        cmd = [
+            "ffmpeg", "-y",
+            "-stream_loop", "-1",
+            "-i", source_video_path,
+            "-vf", fit_filter,
+            "-t", str(duration),
+            "-an",
+            "-c:v", "libx264",
+            "-preset", "faster",
+            "-pix_fmt", "yuv420p",
+            output_video_path,
+        ]
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"    [!] Could not fit custom video clip ({e}).")
             return None
         return output_video_path
 

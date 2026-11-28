@@ -6,20 +6,20 @@ import { Card } from "@astryxdesign/core/Card";
 import { Collapsible } from "@astryxdesign/core/Collapsible";
 import { HStack } from "@astryxdesign/core/HStack";
 import { Heading } from "@astryxdesign/core/Heading";
+import { IconButton } from "@astryxdesign/core/IconButton";
 import { ProgressBar } from "@astryxdesign/core/ProgressBar";
 import { Step, Stepper } from "@astryxdesign/core/Stepper";
 import { Text } from "@astryxdesign/core/Text";
 import { VStack } from "@astryxdesign/core/VStack";
 import * as stylex from "@stylexjs/stylex";
-import { Play, Square } from "lucide-react";
+import { Play, Square, X } from "lucide-react";
 import { useState } from "react";
 import { STAGES } from "../../shared/schema";
-import type { Job } from "../api";
-import { useCancelRender } from "../queries";
+import type { Job, QueuedJob } from "../api";
+import { useCancelRender, useRemoveQueued } from "../queries";
 import { go } from "../route";
 
 const s = stylex.create({
-  // column-reverse keeps the newest line in view without any scrolling code.
   log: { display: "flex", flexDirection: "column-reverse", maxHeight: 260, overflowY: "auto", marginTop: "var(--spacing-2)" },
   lines: { margin: 0, fontFamily: "var(--font-family-code)", fontSize: "var(--font-size-sm)", whiteSpace: "pre-wrap", wordBreak: "break-word" },
 });
@@ -33,13 +33,13 @@ const STATE = {
 
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 
-/** The render in progress, or how the last one ended. */
-export function RenderProgress({ job }: { job: Job }) {
+/** The render in progress, how the last one ended, and any queued shorts waiting next. */
+export function RenderProgress({ job, queue = [] }: { job: Job; queue?: QueuedJob[] }) {
   const cancel = useCancelRender();
+  const removeQueued = useRemoveQueued();
   const [confirming, setConfirming] = useState(false);
   const { stage, scene, scenes } = job.progress;
   const running = job.state === "running";
-  // Steps before the active one show as finished; a finished render has them all behind it.
   const active = job.state === "done" ? STAGES.length : Math.max(stage - 1, 0);
   const elapsed = ((job.finishedAt ?? Date.now()) - job.startedAt) / 1000;
   const inScenes = running && stage === 2 && scene !== null && scenes !== null;
@@ -52,6 +52,7 @@ export function RenderProgress({ job }: { job: Job }) {
             <Text type="supporting">
               {running ? "Running for" : "Took"} {clock(elapsed)}
               {job.request.videoEngine === "fastmetal" ? " · AI video scenes" : ""}
+              {job.request.reuseVisuals ? " · Fast re-assembly" : ""}
             </Text>
           </VStack>
           <HStack gap={2} align="center">
@@ -68,6 +69,25 @@ export function RenderProgress({ job }: { job: Job }) {
         {job.state === "failed" && <Banner status="error" title="The short could not be made" description={job.error} />}
         {job.state === "done" && (
           <Banner status="success" title="Your short is ready" endContent={<Button label="Watch" variant="secondary" size="sm" icon={<Play size={14} />} onClick={() => go({ video: job.video })} />} />
+        )}
+        {queue.length > 0 && (
+          <VStack gap={2}>
+            <Text type="label">Up next in queue ({queue.length})</Text>
+            {queue.map((item, idx) => (
+              <HStack key={item.id} justify="between" align="center" gap={2}>
+                <Text size="sm">
+                  {idx + 1}. {item.title}
+                </Text>
+                <IconButton
+                  label="Remove from queue"
+                  icon={<X size={14} />}
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => removeQueued.mutate(item.id)}
+                />
+              </HStack>
+            ))}
+          </VStack>
         )}
         <Collapsible key={job.state === "failed" ? "failed" : "log"} trigger={<Text weight="medium">Log</Text>} defaultIsOpen={job.state === "failed"}>
           <div {...stylex.props(s.log)}>

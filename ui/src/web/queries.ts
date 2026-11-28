@@ -1,18 +1,15 @@
 // Every read and every change goes through here: one cache, one place for errors and refreshes.
 import { MutationCache, QueryClient, useMutation, useQuery } from "@tanstack/react-query";
-import type { ModelFields, RenderRequest, Settings } from "../shared/schema";
+import type { ModelFields, RenderRequest, ScriptRequest, Settings } from "../shared/schema";
 import { type Job, api } from "./api";
 import { go } from "./route";
 import { toast } from "./toast";
 
 export const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false } },
-  // A failed change is shown once, here, with the reason the server gave.
   mutationCache: new MutationCache({ onError: (e) => toast.bad(e.message) }),
 });
 
-// The server has no push channel, so progress is learned by asking again, only while a short is being made.
-// ponytail: polling while busy; server-sent events would remove it, worth it only if this gets heavy.
 const TICK = 1500;
 
 export const useOptions = () => useQuery({ queryKey: ["options"], queryFn: api.options, staleTime: 30_000 });
@@ -20,23 +17,40 @@ export const useVideos = () => useQuery({ queryKey: ["videos"], queryFn: api.vid
 export const useMyModels = () => useQuery({ queryKey: ["models"], queryFn: api.myModels });
 
 let lastState: Job["state"] | null = null;
-/** The moment a render ends is noticed here, where the answer arrives: the list is refreshed and the person is told. */
+let lastJobId: string | null = null;
 async function readJob() {
   const answer = await api.job();
   const state = answer.job?.state ?? null;
-  if (lastState === "running" && state && state !== "running") {
+  const id = answer.job?.id ?? null;
+  if (lastState === "running" && state && (state !== "running" || id !== lastJobId)) {
     queryClient.invalidateQueries({ queryKey: ["videos"] });
     if (state === "done") toast.ok("Your short is ready");
     if (state === "failed") toast.bad("The short could not be made. The reason is shown above the log.");
   }
   lastState = state;
+  lastJobId = id;
   return answer;
 }
-export const useJob = () => useQuery({ queryKey: ["job"], queryFn: readJob, refetchInterval: (q) => (q.state.data?.job?.state === "running" ? TICK : false) });
+export const useJob = () =>
+  useQuery({
+    queryKey: ["job"],
+    queryFn: readJob,
+    refetchInterval: (q) => (q.state.data?.job?.state === "running" || (q.state.data?.queue?.length ?? 0) > 0 ? TICK : false),
+  });
 
 const refreshJob = () => queryClient.invalidateQueries({ queryKey: ["job"] });
 
-export const useStartRender = () => useMutation({ mutationFn: (request: RenderRequest) => api.start(request), onSuccess: refreshJob });
+export const useStartRender = () =>
+  useMutation({
+    mutationFn: (request: RenderRequest) => api.start(request),
+    onSuccess: (res) => {
+      refreshJob();
+      if (res.queued) toast.ok("Added to render queue");
+    },
+  });
+
+export const useDraftScript = () => useMutation({ mutationFn: (request: ScriptRequest) => api.draftScript(request) });
+export const useUploadFile = () => useMutation({ mutationFn: (file: File) => api.uploadFile(file) });
 
 export const useCancelRender = () =>
   useMutation({
@@ -45,6 +59,12 @@ export const useCancelRender = () =>
       await refreshJob();
       toast.ok("Stopped. Clips made so far are kept and reused next time.");
     },
+  });
+
+export const useRemoveQueued = () =>
+  useMutation({
+    mutationFn: (id: string) => api.removeQueued(id),
+    onSuccess: refreshJob,
   });
 
 export const useDeleteVideo = () =>
@@ -57,7 +77,6 @@ export const useDeleteVideo = () =>
     },
   });
 
-// Every change answers with the whole list, so it is put straight into the cache instead of asked for again.
 const keepModels = (answer: Awaited<ReturnType<typeof api.myModels>>) => queryClient.setQueryData(["models"], answer);
 
 export const useAddModel = () =>

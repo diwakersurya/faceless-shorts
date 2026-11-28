@@ -32,6 +32,28 @@ class TestStickman(unittest.TestCase):
         self.assertEqual((plan["action"], plan["other"], plan["bubble"]), ("talk", None, "42"))
         self.assertEqual(stickman.storyboard_for("Hello.", 0, "not a dict")["action"], "talk")
 
+    def test_expressive_actions_and_keyword_matching(self):
+        self.assertGreaterEqual(len(stickman.ACTIONS), 30)
+        self.assertEqual(stickman.storyboard_for("I just had a genius breakthrough!", 0)["action"], "idea")
+        self.assertEqual(stickman.storyboard_for("Stop scrolling your phone at midnight.", 0)["action"], "sleep")
+        self.assertEqual(stickman.storyboard_for("Stop scrolling your phone all day.", 0)["action"], "scroll")
+        self.assertEqual(stickman.storyboard_for("That hilarious joke made me laugh.", 0)["action"], "laugh")
+        self.assertEqual(stickman.storyboard_for("That was a huge mistake.", 0)["action"], "facepalm")
+        self.assertEqual(stickman.storyboard_for("Feeling totally overwhelmed with burnout.", 0)["action"], "stress")
+
+    def test_character_variants_draw_cleanly_solo_and_paired(self):
+        for char in stickman.CHARACTERS:
+            plan = stickman.storyboard_for(
+                "", 0,
+                {"action": "wave", "other": "idea", "character": char, "other_character": "kid", "bubble": "HI"},
+            )
+            self.assertEqual(plan["character"], char)
+            self.assertEqual(plan["other_character"], "kid")
+            frame = stickman.draw_frame(2.0, plan, 5.0)
+            self.assertEqual(frame.size, (stickman.W * stickman.S, stickman.H * stickman.S), char)
+        # Unknown character safely degrades to None
+        self.assertIsNone(stickman.storyboard_for("", 0, {"character": "alien"})["character"])
+
     def test_every_action_draws_alone_and_as_the_second_figure(self):
         for name in stickman.ACTIONS:
             self.assertEqual(set(stickman.ACTIONS[name](1.3)), set(stickman.STAND), name)

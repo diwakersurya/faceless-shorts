@@ -15,6 +15,7 @@ from rich.panel import Panel
 from faceless_shorts.config import (
     VOICES,
     SUBTITLE_STYLES,
+    SUBTITLE_POSITIONS,
     ART_STYLES,
     ART_STYLE_CATEGORIES,
     TRANSITIONS,
@@ -37,8 +38,9 @@ from faceless_shorts.config import (
     MODEL_KINDS,
     PHOTO_IMAGE_ENGINES,
     PHOTO_VIDEO_ENGINES,
+    SCENE_MOTIONS,
 )
-from faceless_shorts import my_models
+from faceless_shorts import my_models, stickman
 from faceless_shorts.postfx import PostFX
 from faceless_shorts.vfx import VFX_PRESETS
 from faceless_shorts.style_processor import StyleProcessor
@@ -291,7 +293,14 @@ def run_generate(args):
         script = create_or_get_script(args.niche, language=lang)
     elif args.topic:
         console.print(f"[cyan]Dynamically building script for custom topic: '{args.topic}' (language={lang})...[/cyan]")
-        script = create_or_get_script(args.topic, language=lang, script_engine=args.script_engine)
+        script = create_or_get_script(
+            args.topic,
+            language=lang,
+            script_engine=args.script_engine,
+            scene_count=getattr(args, "scenes", None),
+            tone=getattr(args, "tone", "") or "",
+            for_stickman=(args.video_engine == "stickman"),
+        )
     else:
         console.print(f"[cyan]No topic/niche specified. Defaulting to 'dark_psychology' (language={lang})...[/cyan]")
         script = create_or_get_script("dark_psychology", language=lang)
@@ -348,6 +357,7 @@ def run_generate(args):
 
     # Initialize renderer with transitions, VFX, post-FX, quality, engine, audio and language
     output_path = args.output or f"output/{script.niche}_{lang}_short.mp4"
+    work_dir = getattr(args, "project_dir", None) or ".temp_render"
     renderer = VideoRenderer(
         voice=chosen_voice,
         language=lang,
@@ -358,7 +368,7 @@ def run_generate(args):
         progress_bar=not args.no_progress_bar,
         bg_music_preset=args.music,
         speech_rate=args.rate,
-        work_dir=".temp_render",
+        work_dir=work_dir,
         quality=args.quality,
         fps=args.fps,
         effects=args.effects,
@@ -368,13 +378,25 @@ def run_generate(args):
         video_engine=args.video_engine,
         tts_engine=args.tts_engine,
         featuring=featuring,
+        subtitles_enabled=not getattr(args, "no_subtitles", False),
+        subtitle_position=getattr(args, "subtitle_position", "auto") or "auto",
+        words_per_screen=getattr(args, "words_per_screen", None),
+        music_volume_db=getattr(args, "music_volume", -18.0),
+        transition_sfx=getattr(args, "whoosh", None),
+        voice_style=getattr(args, "voice_style", "") or "",
+        watermark=getattr(args, "watermark", "") or "",
+        hook_title=getattr(args, "hook_title", "") or "",
     )
 
     rendered_file = renderer.render(
         script=script,
         output_mp4_path=output_path,
+        custom_bg_music=getattr(args, "music_file", None),
         custom_images_dir=args.images_dir,
-        enable_ai_images=not args.offline
+        enable_ai_images=not args.offline,
+        custom_voiceover=getattr(args, "voiceover", None),
+        reuse_visuals=bool(getattr(args, "reuse_visuals", False)),
+        regenerate_scenes=set(getattr(args, "regenerate_scene", None) or []),
     )
 
     # Generate companion viral metadata pack
@@ -383,6 +405,41 @@ def run_generate(args):
     meta_path = output_path.replace(".mp4", "_metadata.json")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+    # Save companion project state (script + settings + work_dir) so the reel can be edited or re-assembled later
+    project_path = output_path.replace(".mp4", "_project.json")
+    project_data = {
+        "script": script.to_dict(),
+        "project_dir": work_dir,
+        "settings": {
+            "language": lang,
+            "voice": chosen_voice,
+            "subtitleStyle": args.style,
+            "artStyle": args.art_style,
+            "transition": args.transition,
+            "effects": args.effects,
+            "vfx": args.vfx,
+            "quality": args.quality,
+            "music": args.music,
+            "speechRate": args.rate,
+            "scriptEngine": args.script_engine,
+            "ttsEngine": args.tts_engine,
+            "imageEngine": "procedural" if args.offline else args.engine,
+            "videoEngine": args.video_engine,
+            "featuring": [m.id for m in featuring],
+            "progressBar": not args.no_progress_bar,
+            "subtitlesEnabled": not getattr(args, "no_subtitles", False),
+            "subtitlePosition": getattr(args, "subtitle_position", "auto") or "auto",
+            "wordsPerScreen": getattr(args, "words_per_screen", None),
+            "musicVolume": getattr(args, "music_volume", -18.0),
+            "whoosh": getattr(args, "whoosh", None),
+            "voiceStyle": getattr(args, "voice_style", "") or "",
+            "watermark": getattr(args, "watermark", "") or "",
+            "hookTitle": getattr(args, "hook_title", "") or "",
+        },
+    }
+    with open(project_path, "w", encoding="utf-8") as pf:
+        json.dump(project_data, pf, indent=2, ensure_ascii=False)
 
     console.print(Panel(
         f"[bold green]Video Rendered Successfully with Perfect Frame Sync & Sound Design![/bold green]\n\n"
@@ -395,9 +452,74 @@ def run_generate(args):
         border_style="bold green"
     ))
 
+def _ass_to_hex(ass_color: str) -> str:
+    """Convert ASS &HAABBGGRR color string to CSS #RRGGBB for live caption previews in the web UI."""
+    raw = (ass_color or "").replace("&H", "").replace("&h", "").strip()
+    if len(raw) == 8:
+        bb, gg, rr = raw[2:4], raw[4:6], raw[6:8]
+        return f"#{rr}{gg}{bb}"
+    return "#FFFFFF"
+
+
+def run_script(args):
+    """Generate a draft script without rendering, so scenes can be reviewed and edited first."""
+    import contextlib
+
+    lang = (args.language or DEFAULT_LANGUAGE).lower()
+    quiet = contextlib.redirect_stdout(sys.stderr) if args.json else contextlib.nullcontext()
+    with quiet:
+        if args.niche:
+            script = create_or_get_script(args.niche, language=lang)
+        elif args.topic:
+            script = create_or_get_script(
+                args.topic,
+                language=lang,
+                script_engine=args.script_engine,
+                scene_count=args.scenes,
+                tone=args.tone or "",
+                for_stickman=args.stickman,
+            )
+        else:
+            script = create_or_get_script("dark_psychology", language=lang)
+    if args.json:
+        print(json.dumps(script.to_dict(), ensure_ascii=False))
+    else:
+        print(json.dumps(script.to_dict(), indent=2, ensure_ascii=False))
+
+
+def run_voice_preview(args):
+    """Synthesize a short 2-second voice sample for previewing voices before rendering."""
+    from faceless_shorts.tts_engine import GeminiTTS, TTSEngine, resolve_gemini_voice
+
+    samples = {
+        "en": "Here is how your voiceover will sound in the final short.",
+        "hi": "आपकी वीडियो की आवाज़ कुछ इस तरह सुनाई देगी।",
+        "es": "Así es como sonará tu narración en el video final.",
+        "fr": "Voici comment votre voix off sonnera dans la vidéo finale.",
+        "de": "So wird deine Stimme im fertigen Video klingen.",
+        "pt": "É assim que sua narração vai soar no vídeo final.",
+        "ja": "最終的な動画ではこのような声で再生されます。",
+        "ar": "هكذا سيبدو صوت التعليق في الفيديو النهائي.",
+        "ru": "Вот так будет звучать ваш голос в готовом ролике.",
+        "it": "Ecco come suonerà la tua voce nel video finale.",
+        "id": "Beginilah suara narasi Anda di video akhir.",
+    }
+    lang = (args.language or DEFAULT_LANGUAGE).lower()
+    text = args.text or samples.get(lang, samples["en"])
+    out_path = args.output
+    if args.tts_engine == "gemini":
+        voice = resolve_gemini_voice(args.voice)
+        res = GeminiTTS(voice).synthesize(text, out_path, style_prompt=args.voice_style or "")
+        if res is None:
+            print("Gemini could not synthesize the voice preview.", file=sys.stderr)
+            sys.exit(1)
+    else:
+        TTSEngine(default_voice=args.voice).synthesize(text=text, output_path=out_path, voice=args.voice, rate=args.rate or "+0%")
+
+
 def print_options():
     """Print every choice the generate command accepts as JSON (read by the web UI)."""
-    from faceless_shorts.integrations import ComfyUIClient, FastMetalClient, GeminiClient, MfluxClient, load_user_settings
+    from faceless_shorts.integrations import ComfyUIClient, FastMetalClient, GeminiClient, MfluxClient, StockBRoll, load_user_settings
 
     fastmetal_problem = FastMetalClient().problem()
     # Engines that need something installed or running on this computer: what is in the way, if anything.
@@ -407,6 +529,7 @@ def print_options():
     # Short, for a list on a page; the command line gets the full steps from GeminiClient.problem().
     engine_fixes["gemini"] = None if gemini_key else "Needs a Gemini API key. Add one in Settings, or with: config --gemini-key -"
     video_fixes = {
+        "stock": None if StockBRoll.available() else "Needs a free PEXELS_API_KEY or PIXABAY_API_KEY environment variable.",
         "fastmetal": f"{fastmetal_problem[0]} does not exist. {fastmetal_problem[1]}" if fastmetal_problem else None,
         "gemini": engine_fixes["gemini"],
     }
@@ -435,7 +558,39 @@ def print_options():
             {"value": key, "label": key.title(), "description": f"{voice['gender']}, {voice['vibe']}", "language": voice["language"]}
             for key, voice in VOICES.items()
         ],
-        "subtitleStyles": [{"value": key, "label": s["name"], "description": s["description"]} for key, s in SUBTITLE_STYLES.items()],
+        "subtitleStyles": [
+            {
+                "value": key,
+                "label": s["name"],
+                "description": s["description"],
+                "preview": {
+                    "font": s["font_name"],
+                    "primary": _ass_to_hex(s["primary_color"]),
+                    "highlight": _ass_to_hex(s["highlight_color"]),
+                    "outline": _ass_to_hex(s["outline_color"]),
+                    "uppercase": bool(s.get("uppercase", True)),
+                    "wordsPerScreen": int(s.get("words_per_screen", 3)),
+                },
+            }
+            for key, s in SUBTITLE_STYLES.items()
+        ],
+        "subtitlePositions": [
+            {"value": key, "label": p["label"]}
+            for key, p in SUBTITLE_POSITIONS.items()
+        ],
+        "vfx": [
+            {"value": "none", "label": "None", "description": "No overlay VFX"},
+            {"value": "hollywood", "label": "Hollywood", "description": "Anamorphic bloom, chromatic aberration & halation"},
+            {"value": "particles", "label": "Particles", "description": "Floating cosmic stardust & sparks"},
+            {"value": "smoke_fire", "label": "Smoke & Fire", "description": "Rising fire embers & atmospheric smoke"},
+            {"value": "svg_hud", "label": "Sci-Fi HUD", "description": "Animated vector brackets & reticles"},
+            {"value": "mocap", "label": "Telemetry", "description": "Tracking points & coordinate overlays"},
+            {"value": "toon", "label": "Toon Ink", "description": "2D cel-shaded anime line inking"},
+            {"value": "theatre", "label": "Theatre Easing", "description": "Elastic spring camera easing"},
+        ],
+        "motions": [{"value": m, "label": m.replace("_", " ").title()} for m in SCENE_MOTIONS],
+        "stickActions": [{"value": a, "label": a.replace("_", " ").title()} for a in stickman.ACTIONS],
+        "stickCharacters": [{"value": k, "label": v} for k, v in stickman.CHARACTERS.items()],
         "artStyles": [
             {"value": key, "label": s["name"], "description": s["description"], "category": s["category"]}
             for key, s in ART_STYLES.items()
@@ -712,10 +867,47 @@ def main():
     gen_parser.add_argument("--featuring", type=str, default="", help=f"Your models to put in every scene, by name or id, comma-separated (at most {my_models.MAX_FEATURED}; see 'models list'). Gemini and flux2-klein images use their photos, stickman draws their faces, other engines get their descriptions")
     gen_parser.add_argument("-o", "--output", type=str, help="Output MP4 file path")
     gen_parser.add_argument("--script-json", type=str, help="Path to custom JSON script file")
-    gen_parser.add_argument("--images-dir", type=str, help="Path to folder containing scene_01.jpg, scene_02.jpg, etc.")
+    gen_parser.add_argument("--scenes", type=int, default=None, help="Target number of scenes for generated scripts (2-12)")
+    gen_parser.add_argument("--tone", type=str, default="", help="Tone or creative direction for script generation (e.g. 'funny', 'storytime')")
+    gen_parser.add_argument("--images-dir", type=str, help="Path to folder containing scene_01.jpg/.mp4, scene_02.jpg/.mp4, etc.")
+    gen_parser.add_argument("--music-file", type=str, default=None, help="Path to a custom background music MP3/WAV file (automatically ducked)")
+    gen_parser.add_argument("--music-volume", type=float, default=-18.0, help="Background music level in dB before ducking (default: -18.0)")
+    gen_parser.add_argument("--whoosh", action="store_true", default=None, help="Force transition whoosh SFX on (even without background music)")
+    gen_parser.add_argument("--no-whoosh", dest="whoosh", action="store_false", help="Disable transition whoosh SFX")
+    gen_parser.add_argument("--voiceover", type=str, default=None, help="Path to your own recorded voiceover audio file (.mp3/.wav/.m4a)")
+    gen_parser.add_argument("--voice-style", type=str, default="", help="Delivery tone direction for Gemini TTS (e.g. 'calm storyteller', 'whispering')")
+    gen_parser.add_argument("--no-subtitles", action="store_true", help="Render without burned-in subtitles")
+    gen_parser.add_argument("--subtitle-position", type=str, default="auto", choices=list(SUBTITLE_POSITIONS.keys()), help="Vertical subtitle placement (auto, bottom, lower, middle, top)")
+    gen_parser.add_argument("--words-per-screen", type=int, default=None, help="Override words shown per subtitle chunk (1-6)")
+    gen_parser.add_argument("--watermark", type=str, default="", help="Optional subtle channel handle/watermark drawn near top")
+    gen_parser.add_argument("--hook-title", type=str, default="", help="Optional bold opening title banner shown for the first 2.8 seconds")
+    gen_parser.add_argument("--project-dir", type=str, default=None, help="Persistent project folder for intermediate assets (enables fast re-assembly & per-scene regen)")
+    gen_parser.add_argument("--reuse-visuals", action="store_true", help="Reuse existing scene clips/images from --project-dir (fast re-assembly)")
+    gen_parser.add_argument("--regenerate-scene", type=int, action="append", default=[], help="1-based scene number to force-regenerate when --reuse-visuals is set (repeatable)")
     gen_parser.add_argument("--no-progress-bar", action="store_true", help="Disable the glowing bottom retention progress bar")
     gen_parser.add_argument("--save-preset", action="store_true", help="Save the generated script as a reusable preset JSON file")
     gen_parser.add_argument("--offline", action="store_true", help="Run offline without downloading AI images (forces procedural engine)")
+
+    # draft script command (review/edit scenes before rendering)
+    script_parser = subparsers.add_parser("script", help="Generate a draft script JSON for review/editing without rendering")
+    script_parser.add_argument("-t", "--topic", type=str, help="Custom topic")
+    script_parser.add_argument("-n", "--niche", type=str, help="Ready-made niche preset")
+    script_parser.add_argument("-l", "--language", type=str, default="en")
+    script_parser.add_argument("--script-engine", type=str, default=DEFAULT_SCRIPT_ENGINE, choices=list(SCRIPT_ENGINES.keys()))
+    script_parser.add_argument("--scenes", type=int, default=None)
+    script_parser.add_argument("--tone", type=str, default="")
+    script_parser.add_argument("--stickman", action="store_true", help="Ask the LLM to include stickman storyboard actions per scene")
+    script_parser.add_argument("--json", action="store_true", help="Print compact JSON on stdout (used by the web UI)")
+
+    # voice preview command
+    vp_parser = subparsers.add_parser("voice-preview", help="Generate a short voice preview audio file")
+    vp_parser.add_argument("--tts-engine", type=str, default=DEFAULT_TTS_ENGINE, choices=list(TTS_ENGINES.keys()))
+    vp_parser.add_argument("--voice", type=str, default="christopher")
+    vp_parser.add_argument("--language", type=str, default="en")
+    vp_parser.add_argument("--rate", type=str, default="+0%")
+    vp_parser.add_argument("--voice-style", type=str, default="")
+    vp_parser.add_argument("--text", type=str, default="")
+    vp_parser.add_argument("-o", "--output", required=True, help="Output audio file path")
 
     # listing commands
     subparsers.add_parser("voices", help="List available Edge-TTS voices across languages")
@@ -765,6 +957,10 @@ def main():
 
     if args.command == "generate":
         run_generate(args)
+    elif args.command == "script":
+        run_script(args)
+    elif args.command == "voice-preview":
+        run_voice_preview(args)
     elif args.command == "voices":
         list_voices()
     elif args.command == "languages":
